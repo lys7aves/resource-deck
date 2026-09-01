@@ -1,0 +1,26 @@
+[project]
+name = "resourcedeck"
+version = "0.1.0"
+description = "Agentless SSH resource monitoring dashboard"
+requires-python = ">=3.12"
+dependencies = ["asyncssh>=2.14", "fastapi>=0.115", "pydantic>=2.7", "PyYAML>=6.0", "uvicorn[standard]>=0.30"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "httpx>=0.27"]
+
+[project.scripts]
+resourcedeck = "resourcedeck.main:run"
+
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = {"" = "backend/src"}
+
+[tool.setuptools.packages.find]
+where = ["backend/src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["backend/src"]
+asyncio_mode = "auto"

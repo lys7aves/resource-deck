@@ -1,0 +1,14 @@
+[Unit]
+Description=ResourceDeck monitoring dashboard
+After=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/workspace/resource-deck
+Environment=RESOURCEDECK_CONFIG=%h/workspace/resource-deck/config/servers.yaml
+ExecStart=%h/workspace/resource-deck/.venv/bin/resourcedeck
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

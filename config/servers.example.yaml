@@ -1,0 +1,24 @@
+app:
+  bind: 127.0.0.1
+  port: 8765
+polling:
+  system_seconds: 3
+  gpu_seconds: 3
+  users_seconds: 5
+  docker_seconds: 10
+  command_timeout_seconds: 5
+servers:
+  - id: server-b
+    display_name: server-b
+    ssh_host: server-b
+    ssh_user: yuseop
+    ssh_known_hosts: ~/.ssh/known_hosts
+    tracked_users: [yuseop]
+    collectors:
+      gpu: auto
+      docker: auto
+    owner_hints:
+      compose_projects:
+        project-a: yuseop
+      home_prefixes:
+        /home/yuseop: yuseop

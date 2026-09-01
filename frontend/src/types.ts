@@ -1,0 +1,6 @@
+export type MetricStatus = "ok" | "stale" | "unavailable" | "error" | "warming_up";
+export interface Envelope<T> { status: MetricStatus; observed_at: string; value: T | null; short_message?: string | null; }
+export interface Gpu { index: number; name?: string | null; utilization_percent?: number | null; memory_used_mib?: number | null; memory_total_mib?: number | null; temperature_c?: number | null; state: string; }
+export interface User { username: string; estimated_cpu_cores: number; memory_rss_bytes: number; }
+export interface Container { id: string; name: string; image?: string; status?: string; cpu_percent?: number | null; memory_used_bytes?: number | null; gpu_memory_mib: number; gpu_process_count: number; owner: {owner?: string | null; source: string; confidence: string}; }
+export interface Server { server_id: string; display_name: string; connection: "online" | "degraded" | "offline"; collected_at: string; system: Envelope<{cpu_utilization_percent?: number | null; logical_cores?: number | null; load_average_1m?: number | null; memory_used_bytes?: number | null; memory_total_bytes?: number | null}>; gpus: Envelope<Gpu[]>; users: Envelope<User[]>; containers: Envelope<Container[]>; }
