@@ -71,6 +71,7 @@ class UserMetrics(BaseModel):
     username: str
     estimated_cpu_cores: float = 0
     memory_rss_bytes: int = 0
+    tracked: bool = False
 
 
 class OwnerAttribution(BaseModel):
@@ -110,9 +111,10 @@ class Diagnostics(BaseModel):
 
 
 class ServerSnapshot(BaseModel):
-    schema_version: int = 1
+    schema_version: int = 2
     server_id: str
     display_name: str
+    tracked_users_configured: bool = False
     revision: int = 0
     collected_at: datetime = Field(default_factory=utcnow)
     connection: ConnectionStatus = ConnectionStatus.OFFLINE

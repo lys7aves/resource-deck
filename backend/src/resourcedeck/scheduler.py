@@ -18,7 +18,7 @@ class ServerPoller:
         self.server, self.polling, self.store = server, polling, store
         self.executor = RemoteExecutor(server, polling)
         self.previous_cpu: CpuCounters | None = None
-        self.snapshot = ServerSnapshot(server_id=server.id, display_name=server.display_name or server.id)
+        self.snapshot = ServerSnapshot(server_id=server.id, display_name=server.display_name or server.id, tracked_users_configured=bool(server.tracked_users))
         self._last: dict[str, float] = {}
 
     async def run(self) -> None:
@@ -88,7 +88,11 @@ class ServerPoller:
             except Exception as error:
                 errors["gpu_process_evidence"] = type(error).__name__
         if "users" in results and "users" not in errors:
-            self.snapshot.users = MetricEnvelope(status=MetricStatus.OK, value=parse_users(results["users"].stdout), measurement_method="ps_percent_cpu_rss")
+            users = parse_users(results["users"].stdout)
+            tracked_users = set(self.server.tracked_users)
+            for user in users:
+                user.tracked = user.username in tracked_users
+            self.snapshot.users = MetricEnvelope(status=MetricStatus.OK, value=users, measurement_method="ps_percent_cpu_rss")
             self.snapshot.capabilities.users = MetricStatus.OK
         if "docker_inventory" in results and "docker_inventory" not in errors and "docker_stats" not in errors:
             top = {}
@@ -115,12 +119,54 @@ class ServerPoller:
 
 class PollingOrchestrator:
     def __init__(self, servers: list[ServerSettings], polling: PollingSettings, store: SnapshotStore):
-        self.pollers = [ServerPoller(server, polling, store) for server in servers]
-        self._tasks: list[asyncio.Task] = []
+        self.store = store
+        self.polling = polling
+        self.pollers = {server.id: ServerPoller(server, polling, store) for server in servers}
+        self._tasks: dict[str, asyncio.Task] = {}
+        self._lock = asyncio.Lock()
 
     async def start(self) -> None:
-        self._tasks = [asyncio.create_task(poller.run(), name=f"poll-{poller.server.id}") for poller in self.pollers]
+        async with self._lock:
+            for server_id, poller in self.pollers.items():
+                self._start_poller(server_id, poller)
 
     async def stop(self) -> None:
-        for task in self._tasks: task.cancel()
-        await asyncio.gather(*self._tasks, return_exceptions=True)
+        async with self._lock:
+            tasks = list(self._tasks.values())
+            self._tasks = {}
+            for task in tasks:
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+    def _start_poller(self, server_id: str, poller: ServerPoller) -> None:
+        if server_id not in self._tasks:
+            self._tasks[server_id] = asyncio.create_task(poller.run(), name=f"poll-{server_id}")
+
+    async def _stop_poller(self, server_id: str) -> None:
+        task = self._tasks.pop(server_id, None)
+        if task:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    async def reconcile(self, servers: list[ServerSettings], polling: PollingSettings) -> None:
+        """Apply a validated configuration while retaining unaffected pollers."""
+        desired = {server.id: server for server in servers}
+        async with self._lock:
+            removed = set(self.pollers) - set(desired)
+            changed = {
+                server_id
+                for server_id, server in desired.items()
+                if server_id not in self.pollers
+                or self.pollers[server_id].server != server
+                or self.pollers[server_id].polling != polling
+            }
+            for server_id in removed | changed:
+                await self._stop_poller(server_id)
+                self.pollers.pop(server_id, None)
+            for server_id in removed:
+                await self.store.remove_server(server_id)
+            self.polling = polling
+            for server_id in changed:
+                poller = ServerPoller(desired[server_id], polling, self.store)
+                self.pollers[server_id] = poller
+                self._start_poller(server_id, poller)

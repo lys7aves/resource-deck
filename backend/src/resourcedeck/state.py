@@ -28,6 +28,15 @@ class SnapshotStore:
             self._condition.notify_all()
             return snapshot
 
+    async def remove_server(self, server_id: str) -> bool:
+        async with self._condition:
+            if server_id not in self._servers:
+                return False
+            del self._servers[server_id]
+            self._revision += 1
+            self._condition.notify_all()
+            return True
+
     def servers(self) -> list[ServerSnapshot]:
         return sorted(self._servers.values(), key=lambda item: item.display_name)
 

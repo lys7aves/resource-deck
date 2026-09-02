@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class AppSettings(BaseModel):
@@ -47,6 +47,13 @@ class Settings(BaseModel):
     app: AppSettings = Field(default_factory=AppSettings)
     polling: PollingSettings = Field(default_factory=PollingSettings)
     servers: list[ServerSettings] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def server_ids_are_unique(self) -> "Settings":
+        ids = [server.id for server in self.servers]
+        if len(ids) != len(set(ids)):
+            raise ValueError("server IDs must be unique")
+        return self
 
 
 def load_settings(path: str | Path | None = None) -> Settings:
