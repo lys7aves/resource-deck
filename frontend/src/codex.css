@@ -9,6 +9,13 @@
 .usage-window > div { display:flex; justify-content:space-between; gap:12px; font-size:13px; }
 .usage-window span,.usage-window small,.codex-usage footer small { color:#91a5a8; }
 .usage-window strong { font-size:14px; }
+.usage-window .bar { position:relative; overflow:visible; }
+.usage-window .bar-marker { position:absolute; top:-2px; bottom:-2px; width:0; border-left:1px dashed #d4e1df; transform:translateX(-1px); pointer-events:none; }
+.usage-window-summary { display:flex; align-items:baseline; justify-content:flex-end; gap:8px; min-width:0; }
+.usage-window .pace { font-size:12px; white-space:nowrap; }
+.usage-window .pace.on-pace { color:#59d99d; }
+.usage-window .pace.watch-pace { color:#f1bf65; }
+.usage-window .pace.using-fast { color:#f27572; }
 .codex-usage details { margin-top:14px; }
 .codex-usage summary { cursor:pointer; color:#9bded7; font-size:13px; }
 .usage-error { color:#f1bf65; margin:14px 0 0; }

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import App from "./App";
 import type { Server } from "./types";
 
@@ -11,6 +11,7 @@ const subscribe = api.subscribe as ReturnType<typeof vi.fn>;
 vi.mock("./api", () => api);
 
 afterEach(() => {
+  vi.useRealTimers();
   cleanup();
   vi.clearAllMocks();
 });
@@ -114,5 +115,61 @@ describe("ResourceDeck UI", () => {
     expect(screen.getByText("60% left")).toBeTruthy();
     fireEvent.click(screen.getByText("Additional limits (1)"));
     expect(screen.getByText("Reserve")).toBeTruthy();
+  });
+
+  it("marks the linear usage guide and reports pace for every Codex limit", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T01:00:00Z"));
+    getServers.mockResolvedValue([]);
+    getProviders.mockResolvedValue([{ provider_id: "codex", status: "ok", observed_at: "2026-01-01T01:00:00Z", data: { buckets: [
+      { id: "codex", windows: [
+        { kind: "primary", used_percent: 40, remaining_percent: 60, window_duration_minutes: 100, resets_at: Date.parse("2026-01-01T01:50:00Z") / 1000 },
+        { kind: "secondary", used_percent: 55, remaining_percent: 45, window_duration_minutes: 100, resets_at: Date.parse("2026-01-01T01:50:00Z") / 1000 },
+      ] },
+      { id: "reserve", name: "Reserve", windows: [{ kind: "primary", used_percent: 65, remaining_percent: 35, window_duration_minutes: 100, resets_at: Date.parse("2026-01-01T01:50:00Z") / 1000 }] },
+    ] } }]);
+    subscribe.mockReturnValue(() => undefined);
+    render(<App />);
+    await act(async () => { await Promise.resolve(); });
+
+    const onPace = screen.getByRole("progressbar", { name: "Short window usage: 40% used; 50% recommended by now" });
+    expect(onPace.querySelector(".bar-marker")?.getAttribute("style")).toContain("left: 50%");
+    expect(screen.getByText("On pace")).toBeTruthy();
+    expect(screen.getByText("Watch pace")).toBeTruthy();
+    fireEvent.click(screen.getByText("Additional limits (1)"));
+    expect(screen.getByText("Using fast")).toBeTruthy();
+  });
+
+  it("clamps pace guides outside the rate-limit window", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T01:00:00Z"));
+    getServers.mockResolvedValue([]);
+    getProviders.mockResolvedValue([{ provider_id: "codex", status: "ok", observed_at: "2026-01-01T01:00:00Z", data: { buckets: [{ id: "codex", windows: [
+      { kind: "primary", used_percent: 0, remaining_percent: 100, window_duration_minutes: 100, resets_at: Date.parse("2026-01-01T04:20:00Z") / 1000 },
+      { kind: "secondary", used_percent: 100, remaining_percent: 0, window_duration_minutes: 100, resets_at: Date.parse("2026-01-01T00:50:00Z") / 1000 },
+    ] }] } }]);
+    subscribe.mockReturnValue(() => undefined);
+    render(<App />);
+    await act(async () => { await Promise.resolve(); });
+
+    expect(screen.getByRole("progressbar", { name: "Short window usage: 0% used; 0% recommended by now" })).toBeTruthy();
+    expect(screen.getByRole("progressbar", { name: "Short window usage: 100% used; 100% recommended by now" })).toBeTruthy();
+  });
+
+  it("refreshes the pace guide and reset countdown every minute", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T01:00:00Z"));
+    getServers.mockResolvedValue([]);
+    getProviders.mockResolvedValue([{ provider_id: "codex", status: "ok", observed_at: "2026-01-01T01:00:00Z", data: { buckets: [{ id: "codex", windows: [{ kind: "primary", used_percent: 40, remaining_percent: 60, window_duration_minutes: 100, resets_at: Date.parse("2026-01-01T01:50:00Z") / 1000 }] }] } }]);
+    subscribe.mockReturnValue(() => undefined);
+    render(<App />);
+    await act(async () => { await Promise.resolve(); });
+
+    screen.getByRole("progressbar", { name: "Short window usage: 40% used; 50% recommended by now" });
+    expect(screen.getByText(/0h 50m left/)).toBeTruthy();
+    act(() => vi.advanceTimersByTime(60_000));
+    const refreshedBar = screen.getByRole("progressbar", { name: "Short window usage: 40% used; 51% recommended by now" });
+    expect(refreshedBar.querySelector(".bar-marker")?.getAttribute("style")).toContain("left: 49%");
+    expect(screen.getByText(/0h 49m left/)).toBeTruthy();
   });
 });

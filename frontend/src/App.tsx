@@ -5,9 +5,10 @@ import type { CodexUsageBucket, CodexUsageWindow, Container, GpuProcess, Provide
 import "./styles.css";
 import "./codex.css";
 
-function Bar({ value, label, className }: { value?: number | null; label?: string; className?: string }) {
+function Bar({ value, label, className, marker }: { value?: number | null; label?: string; className?: string; marker?: number | null }) {
   const normalized = Number.isFinite(value) ? Math.max(0, Math.min(100, value ?? 0)) : 0;
-  return <div className={`bar ${className ?? ""}`} role={label ? "progressbar" : undefined} aria-label={label} aria-valuemin={label ? 0 : undefined} aria-valuemax={label ? 100 : undefined} aria-valuenow={label ? normalized : undefined}><i style={{ width: `${normalized}%` }} /></div>;
+  const normalizedMarker = Number.isFinite(marker) ? Math.max(0, Math.min(100, marker ?? 0)) : null;
+  return <div className={`bar ${className ?? ""}`} role={label ? "progressbar" : undefined} aria-label={label} aria-valuemin={label ? 0 : undefined} aria-valuemax={label ? 100 : undefined} aria-valuenow={label ? normalized : undefined}><i style={{ width: `${normalized}%` }} />{normalizedMarker !== null && <b className="bar-marker" aria-hidden="true" style={{ left: `${normalizedMarker}%` }} />}</div>;
 }
 
 function Metric({ name, value, sub }: { name: string; value: string; sub?: string }) {
@@ -23,27 +24,43 @@ function MyUsage({ server }: { server: Server }) {
   return <div className="mine"><span>Users</span><strong>{users.reduce((sum, user) => sum + user.estimated_cpu_cores, 0).toFixed(1)} cores</strong><small>{bytes(users.reduce((sum, user) => sum + user.memory_rss_bytes, 0))} RSS</small></div>;
 }
 
-function resetLabel(timestamp: number) {
+function resetLabel(timestamp: number, now: number) {
   const date = new Date(timestamp * 1000);
-  const remaining = Math.max(0, date.getTime() - Date.now());
+  const remaining = Math.max(0, date.getTime() - now);
   const hours = Math.floor(remaining / 3_600_000);
   const minutes = Math.floor((remaining % 3_600_000) / 60_000);
   return `${date.toLocaleString()} · ${hours}h ${minutes}m left`;
 }
 
-function UsageWindow({ window }: { window: CodexUsageWindow }) {
-  return <div className="usage-window"><div><span>{window.window_duration_minutes >= 1440 ? "Long window" : "Short window"}</span><strong>{Math.round(window.remaining_percent)}% left</strong></div><Bar value={window.used_percent} /><small>Resets {resetLabel(window.resets_at)}</small></div>;
+function paceGuidePercent(window: CodexUsageWindow, now: number) {
+  const durationMs = window.window_duration_minutes * 60_000;
+  if (!Number.isFinite(durationMs) || durationMs <= 0) return 0;
+  const startsAt = window.resets_at * 1000 - durationMs;
+  return Math.max(0, Math.min(100, 100 * (now - startsAt) / durationMs));
 }
 
-function UsageBucket({ bucket }: { bucket: CodexUsageBucket }) {
-  return <div className="usage-bucket"><h3>{bucket.name ?? bucket.id}</h3><div className="usage-windows">{bucket.windows.map((window) => <UsageWindow key={window.kind} window={window} />)}</div>{bucket.credits && <small>Credits: {bucket.credits.unlimited ? "unlimited" : bucket.credits.balance}</small>}</div>;
+function UsageWindow({ window, now }: { window: CodexUsageWindow; now: number }) {
+  const name = window.window_duration_minutes >= 1440 ? "Long window" : "Short window";
+  const guide = paceGuidePercent(window, now);
+  const used = Math.max(0, Math.min(100, window.used_percent));
+  const pace = used <= guide ? ["on-pace", "On pace"] : used <= guide + 10 ? ["watch-pace", "Watch pace"] : ["using-fast", "Using fast"];
+  return <div className="usage-window"><div><span>{name}</span><span className="usage-window-summary"><small className={`pace ${pace[0]}`}>{pace[1]}</small><strong>{Math.round(window.remaining_percent)}% left</strong></span></div><Bar value={used} marker={100 - guide} label={`${name} usage: ${Math.round(used)}% used; ${Math.round(guide)}% recommended by now`} /><small>Resets {resetLabel(window.resets_at, now)}</small></div>;
+}
+
+function UsageBucket({ bucket, now }: { bucket: CodexUsageBucket; now: number }) {
+  return <div className="usage-bucket"><h3>{bucket.name ?? bucket.id}</h3><div className="usage-windows">{bucket.windows.map((window) => <UsageWindow key={window.kind} window={window} now={now} />)}</div>{bucket.credits && <small>Credits: {bucket.credits.unlimited ? "unlimited" : bucket.credits.balance}</small>}</div>;
 }
 
 function CodexUsage({ provider }: { provider?: ProviderSnapshot }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 60_000);
+    return () => window.clearInterval(timer);
+  }, []);
   if (!provider) return null;
   const codex = provider.data.buckets?.find((bucket) => bucket.id === "codex");
   const otherBuckets = provider.data.buckets?.filter((bucket) => bucket.id !== "codex") ?? [];
-  return <section className={`codex-usage ${provider.status}`}><header><div><p>LOCAL CODEX ACCOUNT</p><h2>Codex usage {provider.data.plan_type ? `· ${provider.data.plan_type}` : ""}</h2></div><span className={`status ${provider.status}`}>{provider.status}</span></header>{provider.status !== "ok" && <p className="usage-error">{provider.short_message ?? "Usage data is unavailable"}</p>}{codex && <UsageBucket bucket={codex} />}{otherBuckets.length > 0 && <details><summary>Additional limits ({otherBuckets.length})</summary>{otherBuckets.map((bucket) => <UsageBucket key={bucket.id} bucket={bucket} />)}</details>}<footer><small>Updated {new Date(provider.observed_at).toLocaleString()}</small>{provider.data.reset_credits_available !== null && provider.data.reset_credits_available !== undefined && <small>{provider.data.reset_credits_available} reset credits available</small>}</footer></section>;
+  return <section className={`codex-usage ${provider.status}`}><header><div><p>LOCAL CODEX ACCOUNT</p><h2>Codex usage {provider.data.plan_type ? `· ${provider.data.plan_type}` : ""}</h2></div><span className={`status ${provider.status}`}>{provider.status}</span></header>{provider.status !== "ok" && <p className="usage-error">{provider.short_message ?? "Usage data is unavailable"}</p>}{codex && <UsageBucket bucket={codex} now={now} />}{otherBuckets.length > 0 && <details><summary>Additional limits ({otherBuckets.length})</summary>{otherBuckets.map((bucket) => <UsageBucket key={bucket.id} bucket={bucket} now={now} />)}</details>}<footer><small>Updated {new Date(provider.observed_at).toLocaleString()}</small>{provider.data.reset_credits_available !== null && provider.data.reset_credits_available !== undefined && <small>{provider.data.reset_credits_available} reset credits available</small>}</footer></section>;
 }
 
 function Card({ server, onOpen }: { server: Server; onOpen: () => void }) {
