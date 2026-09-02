@@ -2,7 +2,7 @@ import asyncio
 
 import pytest
 
-from resourcedeck.collectors.codex import CodexCollectorError, codex_environment, merge_rate_limit_update, parse_rate_limits_response, read_codex_rate_limits
+from resourcedeck.collectors.codex import CodexAppServerClient, CodexCollectorError, codex_environment, merge_rate_limit_update, parse_rate_limits_response, read_codex_rate_limits
 from resourcedeck.config import CodexProviderSettings
 from resourcedeck.models import MetricStatus
 from resourcedeck.scheduler import CodexUsagePoller
@@ -48,6 +48,28 @@ def test_rate_limit_notification_merges_partial_window_update():
     assert codex["windows"][0]["remaining_percent"] == 40
     assert codex["windows"][1]["remaining_percent"] == 68
     assert codex["credits"]["balance"] == "12"
+
+
+@pytest.mark.asyncio
+async def test_wait_for_rate_limit_update_skips_unrelated_messages_and_times_out():
+    client = CodexAppServerClient("codex", 1)
+    messages = iter([
+        {"method": "thread/started", "params": {}},
+        {"method": "account/rateLimits/updated", "params": {"rateLimits": {"limitId": "codex", "primary": {"usedPercent": 60, "windowDurationMins": 300, "resetsAt": 300}}}},
+    ])
+
+    async def message():
+        return next(messages)
+
+    client._message = message  # type: ignore[method-assign]
+    update = await client.wait_for_rate_limit_update(1)
+    assert update and update["primary"]["usedPercent"] == 60
+
+    async def never():
+        await asyncio.Future()
+
+    client._message = never  # type: ignore[method-assign]
+    assert await client.wait_for_rate_limit_update(0.01) is None
 
 
 @pytest.mark.asyncio

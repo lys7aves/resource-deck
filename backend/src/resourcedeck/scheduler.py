@@ -134,8 +134,12 @@ class CodexUsagePoller:
                 client = CodexAppServerClient(self.settings.executable, self.settings.timeout_seconds)
                 await client.connect()
                 await self._publish_data(await client.read_rate_limits())
-                async for update in client.rate_limit_updates():
-                    await self._publish_data(merge_rate_limit_update(self.snapshot.data, update))
+                while True:
+                    update = await client.wait_for_rate_limit_update(self.settings.poll_seconds)
+                    if update is None:
+                        await self._publish_data(await client.read_rate_limits())
+                    else:
+                        await self._publish_data(merge_rate_limit_update(self.snapshot.data, update))
             except asyncio.CancelledError:
                 raise
             except CodexCollectorError as error:

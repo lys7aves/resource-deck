@@ -35,7 +35,7 @@ function UsageWindow({ window }: { window: CodexUsageWindow }) {
 }
 
 function UsageBucket({ bucket }: { bucket: CodexUsageBucket }) {
-  return <div className="usage-bucket"><h3>{bucket.name ?? bucket.id}</h3>{bucket.windows.map((window) => <UsageWindow key={window.kind} window={window} />)}{bucket.credits && <small>Credits: {bucket.credits.unlimited ? "unlimited" : bucket.credits.balance}</small>}</div>;
+  return <div className="usage-bucket"><h3>{bucket.name ?? bucket.id}</h3><div className="usage-windows">{bucket.windows.map((window) => <UsageWindow key={window.kind} window={window} />)}</div>{bucket.credits && <small>Credits: {bucket.credits.unlimited ? "unlimited" : bucket.credits.balance}</small>}</div>;
 }
 
 function CodexUsage({ provider }: { provider?: ProviderSnapshot }) {

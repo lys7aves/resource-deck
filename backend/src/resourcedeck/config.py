@@ -23,6 +23,7 @@ class PollingSettings(BaseModel):
 class CodexProviderSettings(BaseModel):
     enabled: bool = False
     executable: str | None = None
+    poll_seconds: float = Field(default=60, ge=1)
     reconnect_seconds: float = Field(default=15, ge=1)
     timeout_seconds: float = Field(default=15, ge=1, le=60)
 

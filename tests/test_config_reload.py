@@ -41,7 +41,7 @@ async def test_reconcile_restarts_or_removes_codex_poller():
     await orchestrator.reconcile([], PollingSettings(), enabled)
     assert orchestrator.codex_poller is not None
     first = orchestrator.codex_poller
-    await orchestrator.reconcile([], PollingSettings(), CodexProviderSettings(enabled=True, executable="/usr/bin/codex", reconnect_seconds=30))
+    await orchestrator.reconcile([], PollingSettings(), CodexProviderSettings(enabled=True, executable="/usr/bin/codex", poll_seconds=30))
     assert orchestrator.codex_poller is not first
     await orchestrator.reconcile([], PollingSettings(), disabled)
     assert orchestrator.codex_poller is None

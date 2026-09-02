@@ -11,6 +11,7 @@ providers:
   codex:
     enabled: false
     executable: /absolute/path/to/codex
+    poll_seconds: 60
     reconnect_seconds: 15
     timeout_seconds: 15
 servers:

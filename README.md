@@ -69,11 +69,12 @@ providers:
   codex:
     enabled: true
     executable: /absolute/path/to/codex
+    poll_seconds: 60
     reconnect_seconds: 15
     timeout_seconds: 15
 ```
 
-The collector keeps an App Server connection open and updates the dashboard from rate-limit change notifications. It reads the initial state only after connecting or reconnecting; `reconnect_seconds` controls retry delay after a disconnect. It never logs in, buys credits, or consumes a reset. Codex usage may be shared with ChatGPT Work and other eligible agentic features. Keeping the default `127.0.0.1` bind is important: exposing the dashboard also exposes this usage data.
+The collector keeps an App Server connection open and applies rate-limit change notifications immediately. `poll_seconds` (default: 60) is a fallback read interval when no notification arrives; `reconnect_seconds` controls retry delay after a disconnect. It never logs in, buys credits, or consumes a reset. Codex usage may be shared with ChatGPT Work and other eligible agentic features. Keeping the default `127.0.0.1` bind is important: exposing the dashboard also exposes this usage data.
 
 ## Users and GPU attribution
 

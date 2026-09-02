@@ -110,16 +110,28 @@ class CodexAppServerClient:
         result = await self._response(1)
         return parse_rate_limits_response(result)
 
+    async def wait_for_rate_limit_update(self, timeout_seconds: float | None) -> Mapping[str, Any] | None:
+        async def receive() -> Mapping[str, Any]:
+            while True:
+                message = await self._message()
+                if message.get("method") != "account/rateLimits/updated":
+                    continue
+                params = message.get("params")
+                update = params.get("rateLimits") if isinstance(params, Mapping) else None
+                if not isinstance(update, Mapping):
+                    raise CodexCollectorError("codex_malformed_response")
+                return update
+
+        try:
+            return await asyncio.wait_for(receive(), timeout=timeout_seconds)
+        except TimeoutError:
+            return None
+
     async def rate_limit_updates(self):
         while True:
-            message = await self._message()
-            if message.get("method") != "account/rateLimits/updated":
-                continue
-            params = message.get("params")
-            update = params.get("rateLimits") if isinstance(params, Mapping) else None
-            if not isinstance(update, Mapping):
-                raise CodexCollectorError("codex_malformed_response")
-            yield update
+            update = await self.wait_for_rate_limit_update(None)
+            if update is not None:
+                yield update
 
     async def close(self) -> None:
         if not self.process:
