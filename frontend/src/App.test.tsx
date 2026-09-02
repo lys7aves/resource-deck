@@ -66,6 +66,33 @@ describe("ResourceDeck UI", () => {
     expect(screen.getByText("no container evidence")).toBeTruthy();
   });
 
+  it("shows a VRAM allocation bar while preserving exact GPU memory values", async () => {
+    getServers.mockResolvedValue([{
+      ...server,
+      gpus: envelope([{ index: 0, utilization_percent: 30, memory_used_mib: 13.6 * 1024, memory_total_mib: 24 * 1024, state: "busy" }]),
+    }]);
+    subscribe.mockReturnValue(() => undefined);
+    render(<App />);
+
+    await screen.findByText("13.6 GB / 24.0 GB");
+    const bar = screen.getByRole("progressbar", { name: "GPU0 VRAM allocation" });
+    expect(bar.querySelector("i")?.getAttribute("style")).toContain("width: 56.");
+    expect(screen.queryByText("57%")).toBeNull();
+  });
+
+  it("renders an empty VRAM bar when GPU memory capacity is unavailable", async () => {
+    getServers.mockResolvedValue([{
+      ...server,
+      gpus: envelope([{ index: 0, utilization_percent: 0, memory_used_mib: 1024, memory_total_mib: 0, state: "idle" }]),
+    }]);
+    subscribe.mockReturnValue(() => undefined);
+    render(<App />);
+
+    await screen.findByText("1.0 GB / —");
+    const bar = screen.getByRole("progressbar", { name: "GPU0 VRAM allocation" });
+    expect(bar.querySelector("i")?.getAttribute("style")).toContain("width: 0%");
+  });
+
   it("renders API errors and applies SSE snapshots", async () => {
     let receive: ((servers: Server[]) => void) | undefined;
     getServers.mockRejectedValue(new Error("Could not load server snapshots"));

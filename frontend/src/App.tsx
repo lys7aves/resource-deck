@@ -5,8 +5,9 @@ import type { CodexUsageBucket, CodexUsageWindow, Container, GpuProcess, Provide
 import "./styles.css";
 import "./codex.css";
 
-function Bar({ value }: { value?: number | null }) {
-  return <div className="bar"><i style={{ width: `${Math.max(0, Math.min(100, value ?? 0))}%` }} /></div>;
+function Bar({ value, label, className }: { value?: number | null; label?: string; className?: string }) {
+  const normalized = Number.isFinite(value) ? Math.max(0, Math.min(100, value ?? 0)) : 0;
+  return <div className={`bar ${className ?? ""}`} role={label ? "progressbar" : undefined} aria-label={label} aria-valuemin={label ? 0 : undefined} aria-valuemax={label ? 100 : undefined} aria-valuenow={label ? normalized : undefined}><i style={{ width: `${normalized}%` }} /></div>;
 }
 
 function Metric({ name, value, sub }: { name: string; value: string; sub?: string }) {
@@ -49,12 +50,13 @@ function Card({ server, onOpen }: { server: Server; onOpen: () => void }) {
   const system = server.system.value;
   const gpus = server.gpus.value ?? [];
   const memory = system?.memory_total_bytes ? 100 * (system.memory_used_bytes ?? 0) / system.memory_total_bytes : null;
+  const gpuMemoryPercent = (used?: number | null, total?: number | null) => total && total > 0 && used != null ? 100 * used / total : null;
   return <button className="card" onClick={onOpen}>
     <header><h2>{server.display_name}</h2><span className={`status ${server.connection}`}>{server.connection}</span></header>
-    <section><Metric name="CPU" value={percent(system?.cpu_utilization_percent)} sub={system?.logical_cores ? `${system.logical_cores} cores · load ${system.load_average_1m ?? "—"}` : undefined} /><Bar value={system?.cpu_utilization_percent} /></section>
-    <section><Metric name="RAM" value={percent(memory)} sub={`${bytes(system?.memory_used_bytes)} / ${bytes(system?.memory_total_bytes)}`} /><Bar value={memory} /></section>
-    <div className="gpus">{gpus.length === 0 ? <p>GPU {server.gpus.status}</p> : gpus.map((gpu) => <div className="gpu" key={gpu.index}><span>GPU{gpu.index} <em className={gpu.state}>{gpu.state}</em></span><b>{percent(gpu.utilization_percent)}</b><small>{mib(gpu.memory_used_mib)} / {mib(gpu.memory_total_mib)}</small></div>)}</div>
-    <footer><MyUsage server={server} /><div className="docker"><span>Docker</span><strong>{server.containers.value?.length ?? "—"}</strong><small>containers</small></div></footer>
+    <section className="card-metric"><Metric name="CPU" value={percent(system?.cpu_utilization_percent)} sub={system?.logical_cores ? `${system.logical_cores} cores · load ${system.load_average_1m ?? "—"}` : undefined} /><Bar value={system?.cpu_utilization_percent} /></section>
+    <section className="card-metric"><Metric name="RAM" value={percent(memory)} sub={`${bytes(system?.memory_used_bytes)} / ${bytes(system?.memory_total_bytes)}`} /><Bar value={memory} /></section>
+    <div className="gpus">{gpus.length === 0 ? <p>GPU {server.gpus.status}</p> : gpus.map((gpu) => <div className="gpu" key={gpu.index}><span>GPU{gpu.index} <em className={gpu.state}>{gpu.state}</em></span><b>{percent(gpu.utilization_percent)}</b><small>{mib(gpu.memory_used_mib)} / {mib(gpu.memory_total_mib && gpu.memory_total_mib > 0 ? gpu.memory_total_mib : null)}</small><Bar className="gpu-vram-bar" label={`GPU${gpu.index} VRAM allocation`} value={gpuMemoryPercent(gpu.memory_used_mib, gpu.memory_total_mib)} /></div>)}</div>
+    <footer className="card-footer"><MyUsage server={server} /><div className="docker"><span>Docker</span><strong>{server.containers.value?.length ?? "—"}</strong><small>containers</small></div></footer>
   </button>;
 }
 
