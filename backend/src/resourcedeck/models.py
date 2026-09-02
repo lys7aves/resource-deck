@@ -49,6 +49,7 @@ class SystemMetrics(BaseModel):
 class GpuProcess(BaseModel):
     gpu_uuid: str | None = None
     pid: int
+    username: str | None = None
     process_name: str | None = None
     memory_used_mib: int | None = None
     container_id: str | None = None

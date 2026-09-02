@@ -20,6 +20,7 @@ class ProcessEvidence:
     pid: int
     parent_pids: list[int]
     cgroup: str = ""
+    username: str | None = None
 
 
 def build_process_evidence_command(pids: list[int]) -> str | None:
@@ -34,7 +35,8 @@ def build_process_evidence_command(pids: list[int]) -> str | None:
         "case $parent in \"\"|*[!0-9]*) break;; esac; chain=\"${chain}${parent},\"; "
         "[ \"$parent\" = 1 ] && break; current=$parent; count=$((count + 1)); done; "
         "cgroup=; [ -r /proc/$root_pid/cgroup ] && cgroup=$(tr \"\\n\" \";\" < /proc/$root_pid/cgroup); "
-        "printf \"%s\\037%s\\037%s\\n\" \"$root_pid\" \"$chain\" \"$cgroup\"; done'"
+        "user=$(ps -o user= -p \"$root_pid\" 2>/dev/null | tr -d \"[:space:]\"); "
+        "printf \"%s\\037%s\\037%s\\037%s\\n\" \"$root_pid\" \"$chain\" \"$cgroup\" \"$user\"; done'"
     )
 
 
@@ -66,11 +68,16 @@ def _parse_bytes(text: str | None) -> int | None:
 def parse_process_evidence(output: str) -> dict[int, ProcessEvidence]:
     result: dict[int, ProcessEvidence] = {}
     for line in output.splitlines():
-        fields = line.split("\x1f", 2)
-        if len(fields) != 3:
+        fields = line.split("\x1f", 3)
+        if len(fields) < 3:
             continue
         try:
-            result[int(fields[0])] = ProcessEvidence(int(fields[0]), [int(pid) for pid in fields[1].rstrip(",").split(",") if pid], fields[2])
+            result[int(fields[0])] = ProcessEvidence(
+                int(fields[0]),
+                [int(pid) for pid in fields[1].rstrip(",").split(",") if pid],
+                fields[2],
+                fields[3] or None if len(fields) > 3 else None,
+            )
         except ValueError:
             continue
     return result

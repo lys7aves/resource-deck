@@ -11,6 +11,15 @@ function Bar({ value, label, className, marker }: { value?: number | null; label
   return <div className={`bar ${className ?? ""}`} role={label ? "progressbar" : undefined} aria-label={label} aria-valuemin={label ? 0 : undefined} aria-valuemax={label ? 100 : undefined} aria-valuenow={label ? normalized : undefined}><i style={{ width: `${normalized}%` }} />{normalizedMarker !== null && <b className="bar-marker" aria-hidden="true" style={{ left: `${normalizedMarker}%` }} />}</div>;
 }
 
+function UsageBreakdownBar({ used, mine, label, className }: { used?: number | null; mine?: number | null; label: string; className?: string }) {
+  const total = Number.isFinite(used) ? Math.max(0, Math.min(100, used ?? 0)) : 0;
+  const mineWidth = Number.isFinite(mine) ? Math.max(0, Math.min(total, mine ?? 0)) : 0;
+  return <div className={`bar breakdown-bar ${className ?? ""}`} role="progressbar" aria-label={label} aria-valuemin={0} aria-valuemax={100} aria-valuenow={total}>
+    <span className="bar-mine" aria-hidden="true" style={{ width: `${mineWidth}%` }} />
+    <span className="bar-other" aria-hidden="true" style={{ width: `${total - mineWidth}%` }} />
+  </div>;
+}
+
 function Metric({ name, value, sub }: { name: string; value: string; sub?: string }) {
   return <div className="metric"><span>{name}</span><strong>{value}</strong>{sub && <small>{sub}</small>}</div>;
 }
@@ -22,6 +31,22 @@ function visibleUsers(users: User[], filteringEnabled: boolean): User[] {
 function MyUsage({ server }: { server: Server }) {
   const users = visibleUsers(server.users.value ?? [], server.tracked_users_configured);
   return <div className="mine"><span>Users</span><strong>{users.reduce((sum, user) => sum + user.estimated_cpu_cores, 0).toFixed(1)} cores</strong><small>{bytes(users.reduce((sum, user) => sum + user.memory_rss_bytes, 0))} RSS</small></div>;
+}
+
+function matchingContainer(process: GpuProcess, containers: Container[]): Container | undefined {
+  return containers.find((item) => process.container_id && (item.id.startsWith(process.container_id) || process.container_id.startsWith(item.id)));
+}
+
+function myGpuMemoryMib(gpuUuid: string | null | undefined, processes: GpuProcess[], containers: Container[], trackedUsers: Set<string>): number {
+  return processes
+    .filter((process) => process.gpu_uuid === gpuUuid)
+    .reduce((total, process) => {
+      const container = matchingContainer(process, containers);
+      const isMine = container
+        ? !!container.owner.owner && trackedUsers.has(container.owner.owner)
+        : !!process.username && trackedUsers.has(process.username);
+      return total + (isMine ? process.memory_used_mib ?? 0 : 0);
+    }, 0);
 }
 
 function resetLabel(timestamp: number, now: number, showDays: boolean) {
@@ -46,8 +71,9 @@ function UsageWindow({ window, now }: { window: CodexUsageWindow; now: number })
   const name = isLongWindow ? "주간 사용 한도" : "5시간 사용 한도";
   const guide = paceGuidePercent(window, now);
   const used = Math.max(0, Math.min(100, window.used_percent));
+  const remaining = Math.max(0, Math.min(100, window.remaining_percent));
   const pace = used <= guide ? ["on-pace", "On pace"] : used <= guide + 10 ? ["watch-pace", "Watch pace"] : ["using-fast", "Using fast"];
-  return <div className="usage-window"><div><span>{name}</span><span className="usage-window-summary"><small className={`pace ${pace[0]}`}>{pace[1]}</small><strong>{Math.round(window.remaining_percent)}% left</strong></span></div><Bar value={used} marker={100 - guide} label={`${name} usage: ${Math.round(used)}% used; ${Math.round(guide)}% recommended by now`} /><small>Resets {resetLabel(window.resets_at, now, isLongWindow)}</small></div>;
+  return <div className="usage-window"><div><span>{name}</span><span className="usage-window-summary"><small className={`pace ${pace[0]}`}>{pace[1]}</small><strong>{Math.round(remaining)}% left</strong></span></div><Bar value={remaining} marker={100 - guide} label={`${name} remaining: ${Math.round(remaining)}% left; ${Math.round(100 - guide)}% recommended remaining by now`} /><small>Resets {resetLabel(window.resets_at, now, isLongWindow)}</small></div>;
 }
 
 function UsageBucket({ bucket, now }: { bucket: CodexUsageBucket; now: number }) {
@@ -69,13 +95,26 @@ function CodexUsage({ provider }: { provider?: ProviderSnapshot }) {
 function Card({ server, onOpen }: { server: Server; onOpen: () => void }) {
   const system = server.system.value;
   const gpus = server.gpus.value ?? [];
+  const users = visibleUsers(server.users.value ?? [], server.tracked_users_configured);
+  const trackedUsers = new Set(users.map((user) => user.username));
+  const containers = server.containers.value ?? [];
+  const processes = server.gpu_processes.value ?? [];
+  const myCpuCores = users.reduce((sum, user) => sum + user.estimated_cpu_cores, 0);
+  const myMemoryBytes = users.reduce((sum, user) => sum + user.memory_rss_bytes, 0);
+  const cpuMinePercent = system?.logical_cores && system.logical_cores > 0 ? 100 * myCpuCores / system.logical_cores : null;
   const memory = system?.memory_total_bytes ? 100 * (system.memory_used_bytes ?? 0) / system.memory_total_bytes : null;
+  const memoryMinePercent = system?.memory_total_bytes ? 100 * myMemoryBytes / system.memory_total_bytes : null;
   const gpuMemoryPercent = (used?: number | null, total?: number | null) => total && total > 0 && used != null ? 100 * used / total : null;
   return <button className="card" onClick={onOpen}>
     <header><h2>{server.display_name}</h2><span className={`status ${server.connection}`}>{server.connection}</span></header>
-    <section className="card-metric"><Metric name="CPU" value={percent(system?.cpu_utilization_percent)} sub={system?.logical_cores ? `${system.logical_cores} cores · load ${system.load_average_1m ?? "—"}` : undefined} /><Bar value={system?.cpu_utilization_percent} /></section>
-    <section className="card-metric"><Metric name="RAM" value={percent(memory)} sub={`${bytes(system?.memory_used_bytes)} / ${bytes(system?.memory_total_bytes)}`} /><Bar value={memory} /></section>
-    <div className="gpus">{gpus.length === 0 ? <p>GPU {server.gpus.status}</p> : gpus.map((gpu) => <div className="gpu" key={gpu.index}><span>GPU{gpu.index} <em className={gpu.state}>{gpu.state}</em></span><b>{percent(gpu.utilization_percent)}</b><small>{mib(gpu.memory_used_mib)} / {mib(gpu.memory_total_mib && gpu.memory_total_mib > 0 ? gpu.memory_total_mib : null)}</small><Bar className="gpu-vram-bar" label={`GPU${gpu.index} VRAM allocation`} value={gpuMemoryPercent(gpu.memory_used_mib, gpu.memory_total_mib)} /></div>)}</div>
+    <section className="card-metric"><Metric name="CPU" value={percent(system?.cpu_utilization_percent)} sub={system?.logical_cores ? `${system.logical_cores} cores · mine ${myCpuCores.toFixed(1)} cores` : undefined} /><UsageBreakdownBar used={system?.cpu_utilization_percent} mine={cpuMinePercent} label={`CPU usage: ${percent(system?.cpu_utilization_percent)} used; ${myCpuCores.toFixed(1)} cores mine`} /></section>
+    <section className="card-metric"><Metric name="RAM" value={percent(memory)} sub={`${bytes(system?.memory_used_bytes)} / ${bytes(system?.memory_total_bytes)} · mine ${bytes(myMemoryBytes)} RSS estimate`} /><UsageBreakdownBar used={memory} mine={memoryMinePercent} label={`RAM usage: ${percent(memory)} used; ${bytes(myMemoryBytes)} RSS estimate mine`} /></section>
+    <div className="gpus">{gpus.length === 0 ? <p>GPU {server.gpus.status}</p> : gpus.map((gpu) => {
+      const mine = myGpuMemoryMib(gpu.uuid, processes, containers, trackedUsers);
+      const used = gpuMemoryPercent(gpu.memory_used_mib, gpu.memory_total_mib);
+      const minePercent = gpuMemoryPercent(mine, gpu.memory_total_mib);
+      return <div className="gpu" key={gpu.index}><span>GPU{gpu.index} <em className={gpu.state}>{gpu.state}</em></span><b>{percent(gpu.utilization_percent)}</b><small>{mib(gpu.memory_used_mib)} / {mib(gpu.memory_total_mib && gpu.memory_total_mib > 0 ? gpu.memory_total_mib : null)} · mine {mib(mine)} VRAM</small><UsageBreakdownBar className="gpu-vram-bar" label={`GPU${gpu.index} VRAM allocation: ${mib(gpu.memory_used_mib)} used; ${mib(mine)} mine`} used={used} mine={minePercent} /></div>;
+    })}</div>
     <footer className="card-footer"><MyUsage server={server} /><div className="docker"><span>Docker</span><strong>{server.containers.value?.length ?? "—"}</strong><small>containers</small></div></footer>
   </button>;
 }
@@ -88,12 +127,12 @@ const mappingLabels: Record<string, string> = {
 };
 
 function GpuProcessRow({ process, containers }: { process: GpuProcess; containers: Container[] }) {
-  const container = containers.find((item) => process.container_id && (item.id.startsWith(process.container_id) || process.container_id.startsWith(item.id)));
+  const container = matchingContainer(process, containers);
   const mapping = mappingLabels[process.container_mapping_source] ?? process.container_mapping_source;
   return <p className="process-row">
     <b>PID {process.pid}</b>
     <span>{process.process_name ?? "unknown process"} · {mib(process.memory_used_mib)}</span>
-    <small>{container ? `${container.name} · ${container.owner.owner ?? "unknown owner"}` : "Not mapped to a container"}</small>
+    <small>{container ? `${container.name} · ${container.owner.owner ?? "unknown owner"}` : process.username ? `Host user · ${process.username}` : "Not mapped to a container"}</small>
     <em className={`confidence ${process.container_mapping_confidence}`}>{mapping}</em>
   </p>;
 }

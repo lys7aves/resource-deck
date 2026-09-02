@@ -88,6 +88,8 @@ class ServerPoller:
                     errors["gpu_process_evidence"] = "command_failed"
             except Exception as error:
                 errors["gpu_process_evidence"] = type(error).__name__
+        for process in gpu_processes:
+            process.username = evidence.get(process.pid).username if process.pid in evidence else None
         if "users" in results and "users" not in errors:
             users = parse_users(results["users"].stdout)
             tracked_users = set(self.server.tracked_users)

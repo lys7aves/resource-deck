@@ -36,6 +36,7 @@ from resourcedeck.collectors.docker import (
     build_docker_top_command,
     build_process_evidence_command,
     parse_containers,
+    parse_process_evidence,
 )
 from resourcedeck.models import GpuProcess
 
@@ -68,9 +69,15 @@ def test_gpu_mapping_falls_back_to_init_pid_then_docker_top_then_unmapped():
 
 def test_remote_mapping_commands_are_read_only_and_pid_constrained():
     command = build_process_evidence_command([10, -1, 10])
-    assert command and "/proc/$root_pid/cgroup" in command and "kill" not in command
+    assert command and "/proc/$root_pid/cgroup" in command and "ps -o user=" in command and "kill" not in command
     top = build_docker_top_command(["d" * 64, "not-an-id"])
     assert top and "docker top" in top and "not-an-id" not in top
+
+
+def test_process_evidence_includes_host_username_and_accepts_legacy_rows():
+    evidence = parse_process_evidence("123\x1f77,1,\x1f0::/docker/abc\x1falice\n124\x1f1,\x1f0::/\n")
+    assert evidence[123].username == "alice"
+    assert evidence[124].username is None
 
 async def test_ssh_rejects_missing_known_hosts(tmp_path):
     import pytest

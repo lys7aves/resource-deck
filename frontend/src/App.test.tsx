@@ -70,14 +70,14 @@ describe("ResourceDeck UI", () => {
   it("shows a VRAM allocation bar while preserving exact GPU memory values", async () => {
     getServers.mockResolvedValue([{
       ...server,
-      gpus: envelope([{ index: 0, utilization_percent: 30, memory_used_mib: 13.6 * 1024, memory_total_mib: 24 * 1024, state: "busy" }]),
+      gpus: envelope([{ index: 0, uuid: "GPU-a", utilization_percent: 30, memory_used_mib: 13.6 * 1024, memory_total_mib: 24 * 1024, state: "busy" }]),
     }]);
     subscribe.mockReturnValue(() => undefined);
     render(<App />);
 
-    await screen.findByText("13.6 GB / 24.0 GB");
-    const bar = screen.getByRole("progressbar", { name: "GPU0 VRAM allocation" });
-    expect(bar.querySelector("i")?.getAttribute("style")).toContain("width: 56.");
+    const bar = await screen.findByRole("progressbar", { name: "GPU0 VRAM allocation: 13.6 GB used; 400 MB mine" });
+    expect(bar.querySelector(".bar-mine")?.getAttribute("style")).toContain("width: 1.");
+    expect(bar.querySelector(".bar-other")?.getAttribute("style")).toContain("width: 55.");
     expect(screen.queryByText("57%")).toBeNull();
   });
 
@@ -89,9 +89,48 @@ describe("ResourceDeck UI", () => {
     subscribe.mockReturnValue(() => undefined);
     render(<App />);
 
-    await screen.findByText("1.0 GB / —");
-    const bar = screen.getByRole("progressbar", { name: "GPU0 VRAM allocation" });
-    expect(bar.querySelector("i")?.getAttribute("style")).toContain("width: 0%");
+    const bar = await screen.findByRole("progressbar", { name: "GPU0 VRAM allocation: 1.0 GB used; 0 MB mine" });
+    expect(bar.querySelector(".bar-mine")?.getAttribute("style")).toContain("width: 0%");
+  });
+
+  it("splits CPU, RAM, and VRAM bars into mine and other usage", async () => {
+    getServers.mockResolvedValue([{
+      ...server,
+      gpus: envelope([{ index: 0, uuid: "GPU-a", utilization_percent: 30, memory_used_mib: 1024, memory_total_mib: 2048, state: "busy" }]),
+      gpu_processes: envelope([
+        { gpu_uuid: "GPU-a", pid: 123, username: "root", process_name: "trainer", memory_used_mib: 512, container_id: "abcdef123456", container_mapping_source: "proc_cgroup", container_mapping_confidence: "high" },
+        { gpu_uuid: "GPU-a", pid: 321, username: "daemon", process_name: "other", memory_used_mib: 512, container_mapping_source: "unmapped", container_mapping_confidence: "none" },
+      ]),
+    }]);
+    subscribe.mockReturnValue(() => undefined);
+    render(<App />);
+
+    await screen.findByText("Oracle");
+    const cpu = screen.getByRole("progressbar", { name: "CPU usage: 50% used; 2.0 cores mine" });
+    expect(cpu.querySelector(".bar-mine")?.getAttribute("style")).toContain("width: 25%");
+    expect(cpu.querySelector(".bar-other")?.getAttribute("style")).toContain("width: 25%");
+    const ram = screen.getByRole("progressbar", { name: "RAM usage: 50% used; 1 KB RSS estimate mine" });
+    expect(ram.querySelector(".bar-mine")?.getAttribute("style")).toContain("width: 50%");
+    expect(ram.querySelector(".bar-other")?.getAttribute("style")).toContain("width: 0%");
+    const gpu = screen.getByRole("progressbar", { name: "GPU0 VRAM allocation: 1.0 GB used; 512 MB mine" });
+    expect(gpu.querySelector(".bar-mine")?.getAttribute("style")).toContain("width: 25%");
+    expect(gpu.querySelector(".bar-other")?.getAttribute("style")).toContain("width: 25%");
+  });
+
+  it("caps an over-counted user total at the system usage width", async () => {
+    getServers.mockResolvedValue([{
+      ...server,
+      users: envelope([{ username: "yuseop", estimated_cpu_cores: 8, memory_rss_bytes: 4096, tracked: true }]),
+    }]);
+    subscribe.mockReturnValue(() => undefined);
+    render(<App />);
+
+    await screen.findByText("Oracle");
+    const cpu = screen.getByRole("progressbar", { name: "CPU usage: 50% used; 8.0 cores mine" });
+    expect(cpu.querySelector(".bar-mine")?.getAttribute("style")).toContain("width: 50%");
+    expect(cpu.querySelector(".bar-other")?.getAttribute("style")).toContain("width: 0%");
+    const ram = screen.getByRole("progressbar", { name: "RAM usage: 50% used; 4 KB RSS estimate mine" });
+    expect(ram.querySelector(".bar-mine")?.getAttribute("style")).toContain("width: 50%");
   });
 
   it("renders API errors and applies SSE snapshots", async () => {
@@ -132,7 +171,8 @@ describe("ResourceDeck UI", () => {
     render(<App />);
     await act(async () => { await Promise.resolve(); });
 
-    const onPace = screen.getByRole("progressbar", { name: "5시간 사용 한도 usage: 40% used; 50% recommended by now" });
+    const onPace = screen.getByRole("progressbar", { name: "5시간 사용 한도 remaining: 60% left; 50% recommended remaining by now" });
+    expect(onPace.querySelector("i")?.getAttribute("style")).toContain("width: 60%");
     expect(onPace.querySelector(".bar-marker")?.getAttribute("style")).toContain("left: 50%");
     expect(screen.getByText("On pace")).toBeTruthy();
     expect(screen.getByText("Watch pace")).toBeTruthy();
@@ -152,8 +192,8 @@ describe("ResourceDeck UI", () => {
     render(<App />);
     await act(async () => { await Promise.resolve(); });
 
-    expect(screen.getByRole("progressbar", { name: "5시간 사용 한도 usage: 0% used; 0% recommended by now" })).toBeTruthy();
-    expect(screen.getByRole("progressbar", { name: "5시간 사용 한도 usage: 100% used; 100% recommended by now" })).toBeTruthy();
+    expect(screen.getByRole("progressbar", { name: "5시간 사용 한도 remaining: 100% left; 100% recommended remaining by now" })).toBeTruthy();
+    expect(screen.getByRole("progressbar", { name: "5시간 사용 한도 remaining: 0% left; 0% recommended remaining by now" })).toBeTruthy();
   });
 
   it("refreshes the pace guide and reset countdown every minute", async () => {
@@ -165,10 +205,10 @@ describe("ResourceDeck UI", () => {
     render(<App />);
     await act(async () => { await Promise.resolve(); });
 
-    screen.getByRole("progressbar", { name: "5시간 사용 한도 usage: 40% used; 50% recommended by now" });
+    screen.getByRole("progressbar", { name: "5시간 사용 한도 remaining: 60% left; 50% recommended remaining by now" });
     expect(screen.getByText(/0h 50m left/)).toBeTruthy();
     act(() => vi.advanceTimersByTime(60_000));
-    const refreshedBar = screen.getByRole("progressbar", { name: "5시간 사용 한도 usage: 40% used; 51% recommended by now" });
+    const refreshedBar = screen.getByRole("progressbar", { name: "5시간 사용 한도 remaining: 60% left; 49% recommended remaining by now" });
     expect(refreshedBar.querySelector(".bar-marker")?.getAttribute("style")).toContain("left: 49%");
     expect(screen.getByText(/0h 49m left/)).toBeTruthy();
   });
