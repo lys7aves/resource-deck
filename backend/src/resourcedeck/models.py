@@ -132,3 +132,5 @@ class ProviderSnapshot(BaseModel):
     status: MetricStatus
     observed_at: datetime = Field(default_factory=utcnow)
     data: dict[str, Any] = Field(default_factory=dict)
+    error_code: str | None = None
+    short_message: str | None = None

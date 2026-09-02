@@ -60,6 +60,21 @@ curl http://127.0.0.1:8765/healthz
 
 응답에는 마지막 정상 reload 시각, reload 오류, 재시작이 필요한 필드가 포함됩니다.
 
+## Codex 사용량
+
+로컬 Codex 계정의 남은 한도를 대시보드 상단에 표시하려면 `config/servers.yaml`에 다음을 추가합니다. `executable`에는 `command -v codex`의 절대 경로를 사용합니다.
+
+```yaml
+providers:
+  codex:
+    enabled: true
+    executable: /absolute/path/to/codex
+    reconnect_seconds: 15
+    timeout_seconds: 15
+```
+
+이 수집기는 App Server 연결을 유지하고 한도 변경 알림으로 대시보드를 갱신합니다. 연결 직후와 재연결 때만 초기 상태를 읽으며, `reconnect_seconds`는 연결이 끊겼을 때의 재시도 간격입니다. 로그인·크레딧 구매·한도 reset은 수행하지 않습니다. Codex 사용량은 ChatGPT Work 등과 공유될 수 있습니다. 기본 bind 주소인 `127.0.0.1`을 외부에 공개하면 이 사용량 정보도 함께 노출될 수 있습니다.
+
 ## Users와 GPU 귀속
 
 서버 상세 화면은 `tracked_users`만 먼저 표시합니다. **All users**를 누르면 시스템 계정과 untracked 계정을 포함한 전체 목록을 볼 수 있습니다. tracked user가 현재 실행 중이지 않은 경우에도 시스템 계정을 기본 표시하지 않고 빈 목록을 보여줍니다.

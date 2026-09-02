@@ -4,11 +4,12 @@ import asyncio
 import random
 
 from .collectors.docker import (DOCKER_INVENTORY_COMMAND, DOCKER_STATS_COMMAND, build_docker_top_command, build_process_evidence_command, parse_container_ids, parse_containers, parse_docker_top, parse_process_evidence)
+from .collectors.codex import CodexAppServerClient, CodexCollectorError, merge_rate_limit_update
 from .collectors.linux import SYSTEM_COMMAND, USERS_COMMAND, CpuCounters, parse_system_output
 from .collectors.nvidia import GPU_COMMAND, GPU_PROCESS_COMMAND, parse_gpu_processes, parse_gpus
 from .collectors.users import parse_users
-from .config import PollingSettings, ServerSettings
-from .models import Capabilities, ConnectionStatus, MetricEnvelope, MetricStatus, ServerSnapshot, utcnow
+from .config import CodexProviderSettings, PollingSettings, ServerSettings
+from .models import Capabilities, ConnectionStatus, MetricEnvelope, MetricStatus, ProviderSnapshot, ServerSnapshot, utcnow
 from .ssh import RemoteExecutor
 from .state import SnapshotStore
 
@@ -117,23 +118,82 @@ class ServerPoller:
         await self.store.publish(self.snapshot)
 
 
+class CodexUsagePoller:
+    provider_id = "codex"
+
+    def __init__(self, settings: CodexProviderSettings, store: SnapshotStore):
+        self.settings, self.store = settings, store
+        self.snapshot = ProviderSnapshot(provider_id=self.provider_id, status=MetricStatus.WARMING_UP)
+
+    async def run(self) -> None:
+        while True:
+            client: CodexAppServerClient | None = None
+            try:
+                if not self.settings.executable:
+                    raise CodexCollectorError("codex_executable_not_configured")
+                client = CodexAppServerClient(self.settings.executable, self.settings.timeout_seconds)
+                await client.connect()
+                await self._publish_data(await client.read_rate_limits())
+                async for update in client.rate_limit_updates():
+                    await self._publish_data(merge_rate_limit_update(self.snapshot.data, update))
+            except asyncio.CancelledError:
+                raise
+            except CodexCollectorError as error:
+                await self._publish_error(error.code)
+            except Exception:
+                await self._publish_error("codex_connection_failed")
+            finally:
+                if client:
+                    await client.close()
+            await asyncio.sleep(self.settings.reconnect_seconds)
+
+    async def _publish_data(self, data: dict) -> None:
+        self.snapshot = ProviderSnapshot(provider_id=self.provider_id, status=MetricStatus.OK, data=data)
+        await self.store.publish_provider(self.snapshot)
+
+    async def collect_once(self) -> None:
+        if not self.settings.executable:
+            await self._publish_error("codex_executable_not_configured")
+            return
+        client = CodexAppServerClient(self.settings.executable, self.settings.timeout_seconds)
+        try:
+            await client.connect()
+            await self._publish_data(await client.read_rate_limits())
+        except CodexCollectorError as error:
+            await self._publish_error(error.code)
+        finally:
+            await client.close()
+
+    async def _publish_error(self, code: str) -> None:
+        status = MetricStatus.STALE if self.snapshot.data else MetricStatus.UNAVAILABLE
+        self.snapshot = ProviderSnapshot(provider_id=self.provider_id, status=status, data=self.snapshot.data, error_code=code, short_message="Codex usage is unavailable")
+        await self.store.publish_provider(self.snapshot)
+
+
 class PollingOrchestrator:
-    def __init__(self, servers: list[ServerSettings], polling: PollingSettings, store: SnapshotStore):
+    def __init__(self, servers: list[ServerSettings], polling: PollingSettings, store: SnapshotStore, codex: CodexProviderSettings | None = None):
         self.store = store
         self.polling = polling
         self.pollers = {server.id: ServerPoller(server, polling, store) for server in servers}
         self._tasks: dict[str, asyncio.Task] = {}
+        self.codex_settings = codex or CodexProviderSettings()
+        self.codex_poller: CodexUsagePoller | None = CodexUsagePoller(self.codex_settings, store) if self.codex_settings.enabled else None
+        self._codex_task: asyncio.Task | None = None
         self._lock = asyncio.Lock()
 
     async def start(self) -> None:
         async with self._lock:
             for server_id, poller in self.pollers.items():
                 self._start_poller(server_id, poller)
+            self._start_codex_poller()
 
     async def stop(self) -> None:
         async with self._lock:
             tasks = list(self._tasks.values())
             self._tasks = {}
+            if self._codex_task:
+                tasks.append(self._codex_task)
+                self._codex_task = None
             for task in tasks:
                 task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
@@ -142,13 +202,24 @@ class PollingOrchestrator:
         if server_id not in self._tasks:
             self._tasks[server_id] = asyncio.create_task(poller.run(), name=f"poll-{server_id}")
 
+    def _start_codex_poller(self) -> None:
+        if self.codex_poller and self._codex_task is None:
+            self._codex_task = asyncio.create_task(self.codex_poller.run(), name="poll-codex")
+
+    async def _stop_codex_poller(self) -> None:
+        if self._codex_task:
+            self._codex_task.cancel()
+            await asyncio.gather(self._codex_task, return_exceptions=True)
+            self._codex_task = None
+        self.codex_poller = None
+
     async def _stop_poller(self, server_id: str) -> None:
         task = self._tasks.pop(server_id, None)
         if task:
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
 
-    async def reconcile(self, servers: list[ServerSettings], polling: PollingSettings) -> None:
+    async def reconcile(self, servers: list[ServerSettings], polling: PollingSettings, codex: CodexProviderSettings | None = None) -> None:
         """Apply a validated configuration while retaining unaffected pollers."""
         desired = {server.id: server for server in servers}
         async with self._lock:
@@ -170,3 +241,12 @@ class PollingOrchestrator:
                 poller = ServerPoller(desired[server_id], polling, self.store)
                 self.pollers[server_id] = poller
                 self._start_poller(server_id, poller)
+            candidate_codex = codex or CodexProviderSettings()
+            if candidate_codex != self.codex_settings:
+                await self._stop_codex_poller()
+                self.codex_settings = candidate_codex
+                if candidate_codex.enabled:
+                    self.codex_poller = CodexUsagePoller(candidate_codex, self.store)
+                    self._start_codex_poller()
+                else:
+                    await self.store.remove_provider(CodexUsagePoller.provider_id)

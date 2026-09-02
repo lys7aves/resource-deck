@@ -20,6 +20,17 @@ class PollingSettings(BaseModel):
     connect_timeout_seconds: float = 10
 
 
+class CodexProviderSettings(BaseModel):
+    enabled: bool = False
+    executable: str | None = None
+    reconnect_seconds: float = Field(default=15, ge=1)
+    timeout_seconds: float = Field(default=15, ge=1, le=60)
+
+
+class ProviderSettings(BaseModel):
+    codex: CodexProviderSettings = Field(default_factory=CodexProviderSettings)
+
+
 class CollectorSettings(BaseModel):
     gpu: str = "auto"
     docker: str = "auto"
@@ -46,6 +57,7 @@ class ServerSettings(BaseModel):
 class Settings(BaseModel):
     app: AppSettings = Field(default_factory=AppSettings)
     polling: PollingSettings = Field(default_factory=PollingSettings)
+    providers: ProviderSettings = Field(default_factory=ProviderSettings)
     servers: list[ServerSettings] = Field(default_factory=list)
 
     @model_validator(mode="after")

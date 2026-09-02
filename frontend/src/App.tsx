@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
-import { getServers, subscribe } from "./api";
+import { getProviders, getServers, subscribe } from "./api";
 import { bytes, mib, percent } from "./format";
-import type { Container, GpuProcess, Server, User } from "./types";
+import type { CodexUsageBucket, CodexUsageWindow, Container, GpuProcess, ProviderSnapshot, Server, User } from "./types";
 import "./styles.css";
+import "./codex.css";
 
 function Bar({ value }: { value?: number | null }) {
   return <div className="bar"><i style={{ width: `${Math.max(0, Math.min(100, value ?? 0))}%` }} /></div>;
@@ -19,6 +20,29 @@ function visibleUsers(users: User[], filteringEnabled: boolean): User[] {
 function MyUsage({ server }: { server: Server }) {
   const users = visibleUsers(server.users.value ?? [], server.tracked_users_configured);
   return <div className="mine"><span>Users</span><strong>{users.reduce((sum, user) => sum + user.estimated_cpu_cores, 0).toFixed(1)} cores</strong><small>{bytes(users.reduce((sum, user) => sum + user.memory_rss_bytes, 0))} RSS</small></div>;
+}
+
+function resetLabel(timestamp: number) {
+  const date = new Date(timestamp * 1000);
+  const remaining = Math.max(0, date.getTime() - Date.now());
+  const hours = Math.floor(remaining / 3_600_000);
+  const minutes = Math.floor((remaining % 3_600_000) / 60_000);
+  return `${date.toLocaleString()} · ${hours}h ${minutes}m left`;
+}
+
+function UsageWindow({ window }: { window: CodexUsageWindow }) {
+  return <div className="usage-window"><div><span>{window.window_duration_minutes >= 1440 ? "Long window" : "Short window"}</span><strong>{Math.round(window.remaining_percent)}% left</strong></div><Bar value={window.used_percent} /><small>Resets {resetLabel(window.resets_at)}</small></div>;
+}
+
+function UsageBucket({ bucket }: { bucket: CodexUsageBucket }) {
+  return <div className="usage-bucket"><h3>{bucket.name ?? bucket.id}</h3>{bucket.windows.map((window) => <UsageWindow key={window.kind} window={window} />)}{bucket.credits && <small>Credits: {bucket.credits.unlimited ? "unlimited" : bucket.credits.balance}</small>}</div>;
+}
+
+function CodexUsage({ provider }: { provider?: ProviderSnapshot }) {
+  if (!provider) return null;
+  const codex = provider.data.buckets?.find((bucket) => bucket.id === "codex");
+  const otherBuckets = provider.data.buckets?.filter((bucket) => bucket.id !== "codex") ?? [];
+  return <section className={`codex-usage ${provider.status}`}><header><div><p>LOCAL CODEX ACCOUNT</p><h2>Codex usage {provider.data.plan_type ? `· ${provider.data.plan_type}` : ""}</h2></div><span className={`status ${provider.status}`}>{provider.status}</span></header>{provider.status !== "ok" && <p className="usage-error">{provider.short_message ?? "Usage data is unavailable"}</p>}{codex && <UsageBucket bucket={codex} />}{otherBuckets.length > 0 && <details><summary>Additional limits ({otherBuckets.length})</summary>{otherBuckets.map((bucket) => <UsageBucket key={bucket.id} bucket={bucket} />)}</details>}<footer><small>Updated {new Date(provider.observed_at).toLocaleString()}</small>{provider.data.reset_credits_available !== null && provider.data.reset_credits_available !== undefined && <small>{provider.data.reset_credits_available} reset credits available</small>}</footer></section>;
 }
 
 function Card({ server, onOpen }: { server: Server; onOpen: () => void }) {
@@ -69,10 +93,11 @@ function Detail({ server, close }: { server: Server; close: () => void }) {
 
 export default function App() {
   const [servers, setServers] = useState<Server[]>([]);
+  const [providers, setProviders] = useState<ProviderSnapshot[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  useEffect(() => { getServers().then(setServers).catch((reason: Error) => setError(reason.message)); return subscribe(setServers); }, []);
+  useEffect(() => { getServers().then(setServers).catch((reason: Error) => setError(reason.message)); getProviders().then(setProviders).catch((reason: Error) => setError(reason.message)); return subscribe(setServers, setProviders); }, []);
   const current = servers.find((server) => server.server_id === selected);
   if (current) return <Detail server={current} close={() => setSelected(null)} />;
-  return <main><header className="masthead"><div><p>LIVE RESOURCE MONITOR</p><h1>ResourceDeck</h1></div><span>{servers.length} servers</span></header>{error && <p className="error">{error}</p>}<div className="grid">{servers.map((server) => <Card key={server.server_id} server={server} onOpen={() => setSelected(server.server_id)} />)}</div>{servers.length === 0 && <div className="empty">No snapshots yet. Add servers in <code>config/servers.yaml</code>.</div>}</main>;
+  return <main><header className="masthead"><div><p>LIVE RESOURCE MONITOR</p><h1>ResourceDeck</h1></div><span>{servers.length} servers</span></header>{error && <p className="error">{error}</p>}<CodexUsage provider={providers.find((provider) => provider.provider_id === "codex")} /><div className="grid">{servers.map((server) => <Card key={server.server_id} server={server} onOpen={() => setSelected(server.server_id)} />)}</div>{servers.length === 0 && <div className="empty">No server snapshots yet. Add servers in <code>config/servers.yaml</code>.</div>}</main>;
 }

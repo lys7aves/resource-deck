@@ -1,5 +1,10 @@
 export type MetricStatus = "ok" | "stale" | "unavailable" | "error" | "warming_up";
 export interface Envelope<T> { status: MetricStatus; observed_at: string; value: T | null; short_message?: string | null; }
+export interface CodexUsageWindow { kind: "primary" | "secondary"; used_percent: number; remaining_percent: number; window_duration_minutes: number; resets_at: number; }
+export interface CodexCredits { has_credits: boolean; unlimited: boolean; balance: string; }
+export interface CodexUsageBucket { id: string; name?: string | null; plan_type?: string | null; windows: CodexUsageWindow[]; credits?: CodexCredits | null; rate_limit_reached_type?: string | null; }
+export interface CodexUsage { plan_type?: string | null; buckets: CodexUsageBucket[]; reset_credits_available?: number | null; }
+export interface ProviderSnapshot { provider_id: string; status: MetricStatus; observed_at: string; data: CodexUsage; error_code?: string | null; short_message?: string | null; }
 export interface Gpu { index: number; name?: string | null; utilization_percent?: number | null; memory_used_mib?: number | null; memory_total_mib?: number | null; temperature_c?: number | null; state: string; }
 export interface GpuProcess { gpu_uuid?: string | null; pid: number; process_name?: string | null; memory_used_mib?: number | null; container_id?: string | null; container_mapping_source: string; container_mapping_confidence: string; }
 export interface User { username: string; estimated_cpu_cores: number; memory_rss_bytes: number; tracked: boolean; }

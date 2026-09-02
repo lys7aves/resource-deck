@@ -1,0 +1,15 @@
+.codex-usage { background:#182326; border:1px solid #284044; border-radius:14px; padding:18px; margin:0 0 16px; }
+.codex-usage header,.codex-usage footer { display:flex; justify-content:space-between; gap:16px; align-items:start; }
+.codex-usage header p { color:#8da2a6; font-size:12px; letter-spacing:.12em; margin:0 0 5px; }
+.codex-usage h2 { font-size:20px; }
+.usage-bucket { margin-top:16px; max-width:620px; }
+.usage-bucket h3 { font-size:14px; margin:0 0 8px; color:#c9dbdd; }
+.usage-window { margin:10px 0; }
+.usage-window > div { display:flex; justify-content:space-between; gap:12px; font-size:13px; }
+.usage-window span,.usage-window small,.codex-usage footer small { color:#91a5a8; }
+.usage-window strong { font-size:14px; }
+.codex-usage details { margin-top:14px; }
+.codex-usage summary { cursor:pointer; color:#9bded7; font-size:13px; }
+.usage-error { color:#f1bf65; margin:14px 0 0; }
+.codex-usage.unavailable { border-color:#6b4c4b; }
+.codex-usage.stale { border-color:#675a3c; }

@@ -7,6 +7,12 @@ polling:
   users_seconds: 5
   docker_seconds: 10
   command_timeout_seconds: 5
+providers:
+  codex:
+    enabled: false
+    executable: /absolute/path/to/codex
+    reconnect_seconds: 15
+    timeout_seconds: 15
 servers:
   - id: server-b
     display_name: server-b

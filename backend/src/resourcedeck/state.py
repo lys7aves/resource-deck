@@ -37,6 +37,15 @@ class SnapshotStore:
             self._condition.notify_all()
             return True
 
+    async def remove_provider(self, provider_id: str) -> bool:
+        async with self._condition:
+            if provider_id not in self._providers:
+                return False
+            del self._providers[provider_id]
+            self._revision += 1
+            self._condition.notify_all()
+            return True
+
     def servers(self) -> list[ServerSnapshot]:
         return sorted(self._servers.values(), key=lambda item: item.display_name)
 

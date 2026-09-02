@@ -60,6 +60,21 @@ curl http://127.0.0.1:8765/healthz
 
 The response includes the last successful reload time, any reload error, and fields that require a restart.
 
+## Codex usage
+
+To show the remaining allowance for the locally signed-in Codex account at the top of the dashboard, add the following to `config/servers.yaml`. Set `executable` to the absolute path returned by `command -v codex`.
+
+```yaml
+providers:
+  codex:
+    enabled: true
+    executable: /absolute/path/to/codex
+    reconnect_seconds: 15
+    timeout_seconds: 15
+```
+
+The collector keeps an App Server connection open and updates the dashboard from rate-limit change notifications. It reads the initial state only after connecting or reconnecting; `reconnect_seconds` controls retry delay after a disconnect. It never logs in, buys credits, or consumes a reset. Codex usage may be shared with ChatGPT Work and other eligible agentic features. Keeping the default `127.0.0.1` bind is important: exposing the dashboard also exposes this usage data.
+
 ## Users and GPU attribution
 
 The server detail view starts with `tracked_users` only. Select **All users** to show system and untracked accounts. When no tracked user is currently running, the default list is intentionally empty rather than falling back to system accounts.

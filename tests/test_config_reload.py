@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from resourcedeck.config import PollingSettings, ServerSettings, Settings
+from resourcedeck.config import CodexProviderSettings, PollingSettings, ServerSettings, Settings
 from resourcedeck.main import ConfigWatcher
 from resourcedeck.models import ServerSnapshot
 from resourcedeck.scheduler import PollingOrchestrator
@@ -30,6 +30,22 @@ async def test_reconcile_removes_snapshots_and_replaces_changed_poller():
     assert orchestrator.pollers["one"] is not original
     await orchestrator.reconcile([server("two")], PollingSettings(gpu_seconds=9))
     assert store.server("one") is None
+
+
+@pytest.mark.asyncio
+async def test_reconcile_restarts_or_removes_codex_poller():
+    store = SnapshotStore()
+    disabled = CodexProviderSettings()
+    orchestrator = PollingOrchestrator([], PollingSettings(), store, disabled)
+    enabled = CodexProviderSettings(enabled=True, executable="/usr/bin/codex")
+    await orchestrator.reconcile([], PollingSettings(), enabled)
+    assert orchestrator.codex_poller is not None
+    first = orchestrator.codex_poller
+    await orchestrator.reconcile([], PollingSettings(), CodexProviderSettings(enabled=True, executable="/usr/bin/codex", reconnect_seconds=30))
+    assert orchestrator.codex_poller is not first
+    await orchestrator.reconcile([], PollingSettings(), disabled)
+    assert orchestrator.codex_poller is None
+    await orchestrator.stop()
 
 
 @pytest.mark.asyncio

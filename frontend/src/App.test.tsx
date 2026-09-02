@@ -1,10 +1,11 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import App from "./App";
 import type { Server } from "./types";
 
-const api = vi.hoisted(() => ({ getServers: vi.fn(), subscribe: vi.fn() }));
+const api = vi.hoisted(() => ({ getServers: vi.fn(), getProviders: vi.fn(), subscribe: vi.fn() }));
 const getServers = api.getServers as ReturnType<typeof vi.fn>;
+const getProviders = api.getProviders as ReturnType<typeof vi.fn>;
 const subscribe = api.subscribe as ReturnType<typeof vi.fn>;
 
 vi.mock("./api", () => api);
@@ -38,6 +39,7 @@ const server: Server = {
 };
 
 describe("ResourceDeck UI", () => {
+  beforeEach(() => getProviders.mockResolvedValue([]));
   it("defaults to tracked users and reveals all users on demand", async () => {
     getServers.mockResolvedValue([server]);
     subscribe.mockReturnValue(() => undefined);
@@ -73,5 +75,17 @@ describe("ResourceDeck UI", () => {
     await screen.findByText("Could not load server snapshots");
     receive?.([server]);
     await waitFor(() => expect(screen.getByText("Oracle")).toBeTruthy());
+  });
+
+  it("renders the Codex allowance and additional buckets", async () => {
+    getServers.mockResolvedValue([]);
+    getProviders.mockResolvedValue([{ provider_id: "codex", status: "ok", observed_at: "2026-09-02T00:00:00Z", data: { plan_type: "plus", reset_credits_available: 1, buckets: [{ id: "codex", windows: [{ kind: "primary", used_percent: 40, remaining_percent: 60, window_duration_minutes: 300, resets_at: 1788322054 }], credits: { has_credits: false, unlimited: false, balance: "0" } }, { id: "reserve", name: "Reserve", windows: [{ kind: "primary", used_percent: 20, remaining_percent: 80, window_duration_minutes: 60, resets_at: 1788322054 }] }] } }]);
+    subscribe.mockReturnValue(() => undefined);
+    render(<App />);
+
+    await screen.findByText(/Codex usage · plus/);
+    expect(screen.getByText("60% left")).toBeTruthy();
+    fireEvent.click(screen.getByText("Additional limits (1)"));
+    expect(screen.getByText("Reserve")).toBeTruthy();
   });
 });

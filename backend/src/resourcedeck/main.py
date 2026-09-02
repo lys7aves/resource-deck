@@ -64,7 +64,7 @@ class ConfigWatcher:
         except Exception as error:
             self.last_error = f"{type(error).__name__}: {error}"
             return
-        await self.orchestrator.reconcile(candidate.servers, candidate.polling)
+        await self.orchestrator.reconcile(candidate.servers, candidate.polling, candidate.providers.codex)
         self.restart_required_fields = [
             field
             for field in ("bind", "port")
@@ -82,7 +82,7 @@ def create_app(settings: Settings | None = None, *, config_path: str | Path | No
     elif config_path is not None:
         config_path = Path(config_path)
     store = SnapshotStore()
-    orchestrator = PollingOrchestrator(settings.servers, settings.polling, store)
+    orchestrator = PollingOrchestrator(settings.servers, settings.polling, store, settings.providers.codex)
     watcher = ConfigWatcher(config_path, settings, orchestrator) if config_path else None
 
     @asynccontextmanager
@@ -141,10 +141,12 @@ def create_app(settings: Settings | None = None, *, config_path: str | Path | No
     async def events(request: Request):
         async def stream() -> AsyncIterator[str]:
             yield "event: sync\ndata: " + json.dumps([item.model_dump(mode="json") for item in store.servers()]) + "\n\n"
+            yield "event: providers\ndata: " + json.dumps([item.model_dump(mode="json") for item in store.providers()]) + "\n\n"
             revision = 0
             async for revision in store.events_after(revision):
                 if await request.is_disconnected(): return
                 yield f"event: snapshot\nid: {revision}\ndata: " + json.dumps([item.model_dump(mode="json") for item in store.servers()]) + "\n\n"
+                yield f"event: providers\nid: {revision}\ndata: " + json.dumps([item.model_dump(mode="json") for item in store.providers()]) + "\n\n"
         return StreamingResponse(stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
     frontend = Path(__file__).parents[3] / "frontend" / "dist"
