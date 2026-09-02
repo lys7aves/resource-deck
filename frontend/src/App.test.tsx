@@ -132,7 +132,7 @@ describe("ResourceDeck UI", () => {
     render(<App />);
     await act(async () => { await Promise.resolve(); });
 
-    const onPace = screen.getByRole("progressbar", { name: "Short window usage: 40% used; 50% recommended by now" });
+    const onPace = screen.getByRole("progressbar", { name: "5시간 사용 한도 usage: 40% used; 50% recommended by now" });
     expect(onPace.querySelector(".bar-marker")?.getAttribute("style")).toContain("left: 50%");
     expect(screen.getByText("On pace")).toBeTruthy();
     expect(screen.getByText("Watch pace")).toBeTruthy();
@@ -152,8 +152,8 @@ describe("ResourceDeck UI", () => {
     render(<App />);
     await act(async () => { await Promise.resolve(); });
 
-    expect(screen.getByRole("progressbar", { name: "Short window usage: 0% used; 0% recommended by now" })).toBeTruthy();
-    expect(screen.getByRole("progressbar", { name: "Short window usage: 100% used; 100% recommended by now" })).toBeTruthy();
+    expect(screen.getByRole("progressbar", { name: "5시간 사용 한도 usage: 0% used; 0% recommended by now" })).toBeTruthy();
+    expect(screen.getByRole("progressbar", { name: "5시간 사용 한도 usage: 100% used; 100% recommended by now" })).toBeTruthy();
   });
 
   it("refreshes the pace guide and reset countdown every minute", async () => {
@@ -165,11 +165,28 @@ describe("ResourceDeck UI", () => {
     render(<App />);
     await act(async () => { await Promise.resolve(); });
 
-    screen.getByRole("progressbar", { name: "Short window usage: 40% used; 50% recommended by now" });
+    screen.getByRole("progressbar", { name: "5시간 사용 한도 usage: 40% used; 50% recommended by now" });
     expect(screen.getByText(/0h 50m left/)).toBeTruthy();
     act(() => vi.advanceTimersByTime(60_000));
-    const refreshedBar = screen.getByRole("progressbar", { name: "Short window usage: 40% used; 51% recommended by now" });
+    const refreshedBar = screen.getByRole("progressbar", { name: "5시간 사용 한도 usage: 40% used; 51% recommended by now" });
     expect(refreshedBar.querySelector(".bar-marker")?.getAttribute("style")).toContain("left: 49%");
     expect(screen.getByText(/0h 49m left/)).toBeTruthy();
+  });
+
+  it("shows days in weekly reset countdowns only when at least one day remains", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T01:00:00Z"));
+    getServers.mockResolvedValue([]);
+    getProviders.mockResolvedValue([{ provider_id: "codex", status: "ok", observed_at: "2026-01-01T01:00:00Z", data: { buckets: [{ id: "codex", windows: [
+      { kind: "primary", used_percent: 40, remaining_percent: 60, window_duration_minutes: 10_080, resets_at: Date.parse("2026-01-03T04:04:00Z") / 1000 },
+      { kind: "secondary", used_percent: 40, remaining_percent: 60, window_duration_minutes: 10_080, resets_at: Date.parse("2026-01-02T00:59:00Z") / 1000 },
+    ] }] } }]);
+    subscribe.mockReturnValue(() => undefined);
+    render(<App />);
+    await act(async () => { await Promise.resolve(); });
+
+    expect(screen.getAllByText("주간 사용 한도")).toHaveLength(2);
+    expect(screen.getByText(/2d 3h 4m left/)).toBeTruthy();
+    expect(screen.getByText(/23h 59m left/)).toBeTruthy();
   });
 });

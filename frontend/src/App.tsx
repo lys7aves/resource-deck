@@ -24,12 +24,14 @@ function MyUsage({ server }: { server: Server }) {
   return <div className="mine"><span>Users</span><strong>{users.reduce((sum, user) => sum + user.estimated_cpu_cores, 0).toFixed(1)} cores</strong><small>{bytes(users.reduce((sum, user) => sum + user.memory_rss_bytes, 0))} RSS</small></div>;
 }
 
-function resetLabel(timestamp: number, now: number) {
+function resetLabel(timestamp: number, now: number, showDays: boolean) {
   const date = new Date(timestamp * 1000);
   const remaining = Math.max(0, date.getTime() - now);
-  const hours = Math.floor(remaining / 3_600_000);
+  const days = Math.floor(remaining / 86_400_000);
+  const hours = Math.floor((remaining % 86_400_000) / 3_600_000);
   const minutes = Math.floor((remaining % 3_600_000) / 60_000);
-  return `${date.toLocaleString()} · ${hours}h ${minutes}m left`;
+  const countdown = showDays && days >= 1 ? `${days}d ${hours}h ${minutes}m left` : `${Math.floor(remaining / 3_600_000)}h ${minutes}m left`;
+  return `${date.toLocaleString()} · ${countdown}`;
 }
 
 function paceGuidePercent(window: CodexUsageWindow, now: number) {
@@ -40,11 +42,12 @@ function paceGuidePercent(window: CodexUsageWindow, now: number) {
 }
 
 function UsageWindow({ window, now }: { window: CodexUsageWindow; now: number }) {
-  const name = window.window_duration_minutes >= 1440 ? "Long window" : "Short window";
+  const isLongWindow = window.window_duration_minutes >= 1440;
+  const name = isLongWindow ? "주간 사용 한도" : "5시간 사용 한도";
   const guide = paceGuidePercent(window, now);
   const used = Math.max(0, Math.min(100, window.used_percent));
   const pace = used <= guide ? ["on-pace", "On pace"] : used <= guide + 10 ? ["watch-pace", "Watch pace"] : ["using-fast", "Using fast"];
-  return <div className="usage-window"><div><span>{name}</span><span className="usage-window-summary"><small className={`pace ${pace[0]}`}>{pace[1]}</small><strong>{Math.round(window.remaining_percent)}% left</strong></span></div><Bar value={used} marker={100 - guide} label={`${name} usage: ${Math.round(used)}% used; ${Math.round(guide)}% recommended by now`} /><small>Resets {resetLabel(window.resets_at, now)}</small></div>;
+  return <div className="usage-window"><div><span>{name}</span><span className="usage-window-summary"><small className={`pace ${pace[0]}`}>{pace[1]}</small><strong>{Math.round(window.remaining_percent)}% left</strong></span></div><Bar value={used} marker={100 - guide} label={`${name} usage: ${Math.round(used)}% used; ${Math.round(guide)}% recommended by now`} /><small>Resets {resetLabel(window.resets_at, now, isLongWindow)}</small></div>;
 }
 
 function UsageBucket({ bucket, now }: { bucket: CodexUsageBucket; now: number }) {
