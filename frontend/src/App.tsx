@@ -1,7 +1,7 @@
-import { useEffect, useState } from "react";
-import { getProviders, getServers, subscribe } from "./api";
+import { useEffect, useState, type FormEvent } from "react";
+import { addConfiguredServer, deleteConfiguredServer, getConfiguredServers, getProviders, getServers, setServerEnabled, subscribe, updateConfiguredServer } from "./api";
 import { bytes, mib, percent } from "./format";
-import type { CodexUsageBucket, CodexUsageWindow, Container, GpuProcess, ProviderSnapshot, Server, User } from "./types";
+import type { CodexUsageBucket, CodexUsageWindow, ConfigServer, Container, GpuProcess, ProviderSnapshot, Server, User } from "./types";
 import "./styles.css";
 import "./codex.css";
 
@@ -152,13 +152,33 @@ function Detail({ server, close }: { server: Server; close: () => void }) {
   </div></main>;
 }
 
+const blankConfig = (): ConfigServer => ({ id: "", enabled: true, display_name: "", ssh_host: "", ssh_user: "", ssh_port: 22, ssh_known_hosts: "~/.ssh/known_hosts", tracked_users: [], collectors: { gpu: "auto", docker: "auto" }, owner_hints: { compose_projects: {}, home_prefixes: {} } });
+
+function ServerManagement({ close }: { close: () => void }) {
+  const [items, setItems] = useState<ConfigServer[]>([]);
+  const [editing, setEditing] = useState<ConfigServer | null>(null);
+  const [tracked, setTracked] = useState("");
+  const [compose, setCompose] = useState("{}");
+  const [homes, setHomes] = useState("{}");
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  useEffect(() => { getConfiguredServers().then(setItems).catch((reason: Error) => setError(reason.message)); }, []);
+  const begin = (item: ConfigServer) => { setEditing({ ...item }); setTracked(item.tracked_users.join(", ")); setCompose(JSON.stringify(item.owner_hints.compose_projects, null, 2)); setHomes(JSON.stringify(item.owner_hints.home_prefixes, null, 2)); setError(null); };
+  const save = async (event: FormEvent) => { event.preventDefault(); if (!editing) return; setSaving(true); setError(null); try { const payload = { ...editing, tracked_users: tracked.split(",").map((value) => value.trim()).filter(Boolean), owner_hints: { compose_projects: JSON.parse(compose), home_prefixes: JSON.parse(homes) } }; const next = editing.id ? await updateConfiguredServer(payload) : await addConfiguredServer(payload); setItems(next); setEditing(null); } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not save server"); } finally { setSaving(false); } };
+  const toggle = async (item: ConfigServer) => { try { setItems(await setServerEnabled(item.id, !item.enabled)); } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not update server"); } };
+  const remove = async (item: ConfigServer) => { if (!window.confirm(`Delete ${item.display_name || item.id}?`)) return; try { setItems(await deleteConfiguredServer(item.id)); } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not delete server"); } };
+  return <main className="management"><button className="back" onClick={close}>← Dashboard</button><header className="management-header"><div><p className="caption">SERVER CONFIGURATION</p><h1>Manage servers</h1></div><button className="manage-button" onClick={() => begin(blankConfig())}>＋ Add server</button></header>{error && <p className="error">{error}</p>}<div className="server-list">{items.map((item) => <div className="server-row" key={item.id}><button className={`server-enabled ${item.enabled ? "on" : ""}`} aria-label={`${item.display_name || item.id} ${item.enabled ? "enabled" : "disabled"}`} onClick={() => toggle(item)}>{item.enabled ? "ON" : "OFF"}</button><div><strong>{item.display_name || item.id}</strong><small>{item.ssh_user ? `${item.ssh_user}@` : ""}{item.ssh_host}:{item.ssh_port}</small></div><button className="row-action" onClick={() => begin(item)}>Edit</button><button className="row-action danger" onClick={() => remove(item)}>Delete</button></div>)}</div>{editing && <form className="server-form" onSubmit={save}><div className="form-header"><h2>{editing.id ? "Edit server" : "Add server"}</h2><button type="button" className="row-action" onClick={() => setEditing(null)}>Cancel</button></div><label>ID<input required pattern="[A-Za-z0-9_-]+" disabled={!!items.find((item) => item.id === editing.id)} value={editing.id} onChange={(event) => setEditing({ ...editing, id: event.target.value })} /></label><label>Display name<input value={editing.display_name ?? ""} onChange={(event) => setEditing({ ...editing, display_name: event.target.value })} /></label><label>SSH host<input required value={editing.ssh_host} onChange={(event) => setEditing({ ...editing, ssh_host: event.target.value })} /></label><div className="form-grid"><label>SSH user<input value={editing.ssh_user ?? ""} onChange={(event) => setEditing({ ...editing, ssh_user: event.target.value })} /></label><label>SSH port<input type="number" min="1" max="65535" required value={editing.ssh_port} onChange={(event) => setEditing({ ...editing, ssh_port: Number(event.target.value) })} /></label></div><label>Known hosts path<input required value={editing.ssh_known_hosts} onChange={(event) => setEditing({ ...editing, ssh_known_hosts: event.target.value })} /></label><label>Tracked users <small>(comma separated)</small><input value={tracked} onChange={(event) => setTracked(event.target.value)} /></label><div className="form-grid"><label>GPU collector<select value={editing.collectors.gpu} onChange={(event) => setEditing({ ...editing, collectors: { ...editing.collectors, gpu: event.target.value } })}><option>auto</option><option>off</option></select></label><label>Docker collector<select value={editing.collectors.docker} onChange={(event) => setEditing({ ...editing, collectors: { ...editing.collectors, docker: event.target.value } })}><option>auto</option><option>off</option></select></label></div><label>Compose project owners <textarea value={compose} onChange={(event) => setCompose(event.target.value)} /></label><label>Home prefix owners <textarea value={homes} onChange={(event) => setHomes(event.target.value)} /></label><button className="save-button" disabled={saving}>{saving ? "Saving…" : "Save server"}</button></form>}</main>;
+}
+
 export default function App() {
   const [servers, setServers] = useState<Server[]>([]);
   const [providers, setProviders] = useState<ProviderSnapshot[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
+  const [management, setManagement] = useState(false);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => { getServers().then(setServers).catch((reason: Error) => setError(reason.message)); getProviders().then(setProviders).catch((reason: Error) => setError(reason.message)); return subscribe(setServers, setProviders); }, []);
   const current = servers.find((server) => server.server_id === selected);
+  if (management) return <ServerManagement close={() => setManagement(false)} />;
   if (current) return <Detail server={current} close={() => setSelected(null)} />;
-  return <main><header className="masthead"><div><p>LIVE RESOURCE MONITOR</p><h1>ResourceDeck</h1></div><span>{servers.length} servers</span></header>{error && <p className="error">{error}</p>}<CodexUsage provider={providers.find((provider) => provider.provider_id === "codex")} /><div className="grid">{servers.map((server) => <Card key={server.server_id} server={server} onOpen={() => setSelected(server.server_id)} />)}</div>{servers.length === 0 && <div className="empty">No server snapshots yet. Add servers in <code>config/servers.yaml</code>.</div>}</main>;
+  return <main><header className="masthead"><div><p>LIVE RESOURCE MONITOR</p><h1>ResourceDeck</h1></div><div className="masthead-actions"><span>{servers.length} active servers</span><button className="manage-button" onClick={() => setManagement(true)}>⚙ Manage servers</button></div></header>{error && <p className="error">{error}</p>}<CodexUsage provider={providers.find((provider) => provider.provider_id === "codex")} /><div className="grid">{servers.map((server) => <Card key={server.server_id} server={server} onOpen={() => setSelected(server.server_id)} />)}</div>{servers.length === 0 && <div className="empty">No active server snapshots. Open <button className="link-button" onClick={() => setManagement(true)}>Manage servers</button> to enable one.</div>}</main>;
 }

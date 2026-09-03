@@ -43,11 +43,12 @@ class OwnerHints(BaseModel):
 
 
 class ServerSettings(BaseModel):
-    id: str
+    id: str = Field(min_length=1, pattern=r"^[A-Za-z0-9_-]+$")
+    enabled: bool = True
     display_name: str | None = None
-    ssh_host: str
+    ssh_host: str = Field(min_length=1)
     ssh_user: str | None = None
-    ssh_port: int = 22
+    ssh_port: int = Field(default=22, ge=1, le=65535)
     # Host-key verification is always explicit; unknown hosts are never accepted.
     ssh_known_hosts: str = "~/.ssh/known_hosts"
     tracked_users: list[str] = Field(default_factory=list)

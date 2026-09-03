@@ -16,6 +16,7 @@ providers:
     timeout_seconds: 15
 servers:
   - id: server-b
+    enabled: true
     display_name: server-b
     ssh_host: server-b
     ssh_user: yuseop

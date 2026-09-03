@@ -13,7 +13,8 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from .config import Settings, load_settings
+from .config import ServerSettings, Settings, load_settings
+from .config_store import ConfigStore
 from .models import utcnow
 from .scheduler import PollingOrchestrator
 from .state import SnapshotStore
@@ -84,6 +85,7 @@ def create_app(settings: Settings | None = None, *, config_path: str | Path | No
     store = SnapshotStore()
     orchestrator = PollingOrchestrator(settings.servers, settings.polling, store, settings.providers.codex)
     watcher = ConfigWatcher(config_path, settings, orchestrator) if config_path else None
+    config_store = ConfigStore(config_path) if config_path else None
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -98,6 +100,30 @@ def create_app(settings: Settings | None = None, *, config_path: str | Path | No
     app = FastAPI(title="ResourceDeck", version="0.1.0", lifespan=lifespan)
     app.state.store = store
     app.state.config_watcher = watcher
+    app.state.config_store = config_store
+
+    def require_local(request: Request) -> None:
+        host = request.client.host if request.client else None
+        if host not in {"127.0.0.1", "::1", "localhost"}:
+            raise HTTPException(403, "Server management is only available from the local machine")
+
+    async def save_servers(request: Request, servers: list) -> list:
+        require_local(request)
+        if not watcher or not config_store:
+            raise HTTPException(503, "Configuration file is not writable")
+        previous = config_store.path.read_bytes() if config_store.path.is_file() else None
+        try:
+            candidate = config_store.write_servers(servers)
+            await watcher.reload()
+            if watcher.last_error:
+                raise ValueError(watcher.last_error)
+        except Exception as error:
+            if previous is None:
+                config_store.path.unlink(missing_ok=True)
+            else:
+                config_store.path.write_bytes(previous)
+            raise HTTPException(422, str(error)) from error
+        return [server.model_dump(mode="json") for server in candidate.servers]
 
     @app.get("/healthz")
     async def healthz() -> dict[str, object]:
@@ -114,6 +140,50 @@ def create_app(settings: Settings | None = None, *, config_path: str | Path | No
     @app.get("/api/v1/servers")
     async def servers():
         return store.servers()
+
+    @app.get("/api/v1/config/servers")
+    async def configured_servers():
+        if not watcher:
+            raise HTTPException(503, "Configuration management is unavailable")
+        return [server.model_dump(mode="json") for server in watcher.settings.servers]
+
+    @app.post("/api/v1/config/servers")
+    async def add_server(request: Request, server: ServerSettings):
+        if not watcher or not config_store:
+            raise HTTPException(503, "Configuration file is not writable")
+        existing = list(watcher.settings.servers)
+        if any(item.id == server.id for item in existing):
+            raise HTTPException(409, "Server ID already exists")
+        return await save_servers(request, existing + [server])
+
+    @app.put("/api/v1/config/servers/{server_id}")
+    async def update_server(server_id: str, request: Request, server: ServerSettings):
+        if server.id != server_id:
+            raise HTTPException(400, "Server ID cannot be changed")
+        if not watcher:
+            raise HTTPException(503, "Configuration management is unavailable")
+        existing = list(watcher.settings.servers)
+        if not any(item.id == server_id for item in existing):
+            raise HTTPException(404, "Unknown configured server")
+        return await save_servers(request, [server if item.id == server_id else item for item in existing])
+
+    @app.patch("/api/v1/config/servers/{server_id}/enabled")
+    async def toggle_server(server_id: str, request: Request, enabled: bool):
+        if not watcher:
+            raise HTTPException(503, "Configuration management is unavailable")
+        existing = list(watcher.settings.servers)
+        if not any(item.id == server_id for item in existing):
+            raise HTTPException(404, "Unknown configured server")
+        return await save_servers(request, [item.model_copy(update={"enabled": enabled}) if item.id == server_id else item for item in existing])
+
+    @app.delete("/api/v1/config/servers/{server_id}")
+    async def delete_server(server_id: str, request: Request):
+        if not watcher:
+            raise HTTPException(503, "Configuration management is unavailable")
+        existing = list(watcher.settings.servers)
+        if not any(item.id == server_id for item in existing):
+            raise HTTPException(404, "Unknown configured server")
+        return await save_servers(request, [item for item in existing if item.id != server_id])
 
     @app.get("/api/v1/servers/{server_id}")
     async def server(server_id: str):

@@ -180,7 +180,7 @@ class PollingOrchestrator:
     def __init__(self, servers: list[ServerSettings], polling: PollingSettings, store: SnapshotStore, codex: CodexProviderSettings | None = None):
         self.store = store
         self.polling = polling
-        self.pollers = {server.id: ServerPoller(server, polling, store) for server in servers}
+        self.pollers = {server.id: ServerPoller(server, polling, store) for server in servers if server.enabled}
         self._tasks: dict[str, asyncio.Task] = {}
         self.codex_settings = codex or CodexProviderSettings()
         self.codex_poller: CodexUsagePoller | None = CodexUsagePoller(self.codex_settings, store) if self.codex_settings.enabled else None
@@ -227,7 +227,8 @@ class PollingOrchestrator:
 
     async def reconcile(self, servers: list[ServerSettings], polling: PollingSettings, codex: CodexProviderSettings | None = None) -> None:
         """Apply a validated configuration while retaining unaffected pollers."""
-        desired = {server.id: server for server in servers}
+        configured = {server.id: server for server in servers}
+        desired = {server_id: server for server_id, server in configured.items() if server.enabled}
         async with self._lock:
             removed = set(self.pollers) - set(desired)
             changed = {
@@ -240,7 +241,7 @@ class PollingOrchestrator:
             for server_id in removed | changed:
                 await self._stop_poller(server_id)
                 self.pollers.pop(server_id, None)
-            for server_id in removed:
+            for server_id in removed | {server_id for server_id in self.pollers if server_id not in desired}:
                 await self.store.remove_server(server_id)
             self.polling = polling
             for server_id in changed:

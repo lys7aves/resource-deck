@@ -8,6 +8,7 @@ ResourceDeck is an agentless, read-only resource dashboard for a small group of 
 
 - Live server snapshots delivered through Server-Sent Events.
 - Automatic reload of `config/servers.yaml` for server definitions, polling intervals, collectors, `tracked_users`, and owner hints. Invalid configurations keep the last valid configuration active.
+- Local server management UI for adding, editing, deleting, and enabling/disabling servers without editing YAML directly.
 - Default tracked-user view with an All users toggle.
 - GPU PID-to-container-to-owner evidence in the server detail view.
 - Read-only live verification command for GPU Docker attribution.
@@ -51,6 +52,8 @@ Open <http://127.0.0.1:8765>.
 ## Configuration reload and diagnostics
 
 `config/servers.yaml` is checked approximately once per second. Valid changes are applied without restarting the API process. A server added or changed in the file receives a new poller; a removed server is removed from the snapshot stream.
+
+Each server may set `enabled: false`. Disabled servers remain in the configuration management screen but are not polled or shown on the dashboard. The **Manage servers** panel writes changes atomically and is available only from the local machine; SSH credentials are never stored by ResourceDeck.
 
 `app.bind` and `app.port` require a service restart because Uvicorn is already bound to the current address and port. Check reload status at:
 

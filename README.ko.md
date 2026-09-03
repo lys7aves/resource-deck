@@ -8,6 +8,7 @@ ResourceDeck은 소수의 Linux 서버를 SSH로 모니터링하는 에이전트
 
 - Server-Sent Events 기반의 실시간 서버 snapshot 제공
 - 서버 정의, 수집 주기, collector, `tracked_users`, owner hint를 `config/servers.yaml` 변경만으로 자동 reload
+- YAML을 직접 편집하지 않고 서버 추가·수정·삭제·활성/비활성 전환을 할 수 있는 로컬 서버 관리 UI
 - 기본 tracked user 화면과 전체 사용자 보기 토글
 - 서버 상세 화면에서 GPU PID → container → owner 매핑 근거 표시
 - GPU Docker 귀속을 읽기 전용으로 검증하는 live 확인 명령 제공
@@ -51,6 +52,8 @@ ResourceDeck은 소수의 Linux 서버를 SSH로 모니터링하는 에이전트
 ## 설정 자동 reload와 진단
 
 `config/servers.yaml`은 약 1초마다 확인합니다. 유효한 변경은 API 프로세스 재시작 없이 적용됩니다. 파일에 추가하거나 변경한 서버에는 새 poller가 적용되고, 삭제한 서버는 snapshot stream에서도 제거됩니다.
+
+서버에 `enabled: false`를 지정하면 설정 관리 화면에는 남지만 SSH 수집과 대시보드 표시를 중지합니다. **서버 관리** 패널의 저장은 원자적으로 처리되며 로컬 머신에서만 사용할 수 있습니다. ResourceDeck은 SSH 비밀번호나 키를 저장하지 않습니다.
 
 Uvicorn이 이미 현재 주소와 포트에 bind되어 있으므로 `app.bind`, `app.port` 변경은 service 재시작이 필요합니다. 다음 명령으로 reload 상태를 확인합니다.
 
