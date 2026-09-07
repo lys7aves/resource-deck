@@ -2,70 +2,159 @@
 
 [English documentation](README.md)
 
-ResourceDeck은 소수의 Linux 서버를 SSH로 모니터링하는 에이전트리스·읽기 전용 리소스 대시보드입니다. 시스템, GPU, 사용자, Docker, GPU 프로세스 귀속 정보를 수집하며 Docker 수명 주기, 프로세스 제어, 원격 서버 설정 변경 명령은 전송하지 않습니다.
+ResourceDeck은 소수의 Linux 서버를 SSH로 모니터링하는 로컬·읽기 전용 대시보드입니다. 모니터링 대상 서버에 에이전트를 설치하지 않고 시스템, GPU, 사용자, Docker, GPU 프로세스 귀속 정보를 표시합니다.
 
-## 주요 기능
-
-- Server-Sent Events 기반의 실시간 서버 snapshot 제공
-- 서버 정의, 수집 주기, collector, `tracked_users`, owner hint를 `config/servers.yaml` 변경만으로 자동 reload
-- YAML을 직접 편집하지 않고 서버 추가·수정·삭제·활성/비활성 전환을 할 수 있는 로컬 서버 관리 UI
-- 기본 tracked user 화면과 전체 사용자 보기 토글
-- 서버 상세 화면에서 GPU PID → container → owner 매핑 근거 표시
-- GPU Docker 귀속을 읽기 전용으로 검증하는 live 확인 명령 제공
+Docker 수명 주기, 프로세스 제어, 원격 설정 변경 명령은 전송하지 않습니다. 기본적으로 대시보드는 `127.0.0.1`에만 bind되며, SSH 비밀번호나 개인 키를 저장하지 않습니다.
 
 ## 요구 사항
 
 - Python 3.12 이상
-- `$HOME/.ssh/known_hosts`에 신뢰된 host key가 있는 SSH alias 또는 서버별 `ssh_known_hosts` 경로
-- 프런트엔드 build·test용 Node.js 18 이상
-- 선택 사항: Windows 로그인 자동 실행을 위한 systemd 활성 WSL 2 및 Windows PowerShell
+- 프런트엔드 build용 Node.js 18 이상
+- 각 모니터링 대상 Linux 서버의 SSH 계정
+- Windows 로그인 자동 실행을 사용할 경우: systemd가 활성화된 WSL 2 및 Windows PowerShell
 
-## 빠른 시작
+## 1. 서버 연결 준비
 
-1. 로컬 서버 설정 파일을 만듭니다.
-
-   ```bash
-   cp config/servers.example.yaml config/servers.yaml
-   ```
-
-2. SSH host, 사용자, tracked user, collector, owner hint를 설정합니다. `tracked_users`가 Users 화면의 기본 목록이며, 비어 있으면 전체 사용자를 기본 표시합니다.
-
-3. 가상환경을 만들고 백엔드를 설치합니다.
-
-   ```bash
-   python3.12 -m venv .venv
-   .venv/bin/pip install -e ".[dev]"
-   ```
-
-4. 프런트엔드를 build하고 앱을 실행합니다.
-
-   ```bash
-   cd frontend
-   npm install
-   npm run build
-   cd ..
-   .venv/bin/resourcedeck
-   ```
-
-브라우저에서 <http://127.0.0.1:8765>을 엽니다.
-
-## 설정 자동 reload와 진단
-
-`config/servers.yaml`은 약 1초마다 확인합니다. 유효한 변경은 API 프로세스 재시작 없이 적용됩니다. 파일에 추가하거나 변경한 서버에는 새 poller가 적용되고, 삭제한 서버는 snapshot stream에서도 제거됩니다.
-
-서버에 `enabled: false`를 지정하면 설정 관리 화면에는 남지만 SSH 수집과 대시보드 표시를 중지합니다. **서버 관리** 패널의 저장은 원자적으로 처리되며 로컬 머신에서만 사용할 수 있습니다. ResourceDeck은 SSH 비밀번호나 키를 저장하지 않습니다.
-
-Uvicorn이 이미 현재 주소와 포트에 bind되어 있으므로 `app.bind`, `app.port` 변경은 service 재시작이 필요합니다. 다음 명령으로 reload 상태를 확인합니다.
+### 설정 파일 만들기
 
 ```bash
-curl http://127.0.0.1:8765/healthz
+cp config/servers.example.yaml config/servers.yaml
 ```
 
-응답에는 마지막 정상 reload 시각, reload 오류, 재시작이 필요한 필드가 포함됩니다.
+### SSH 키 등록하기
 
-## Codex 사용량
+ResourceDeck을 실행할 WSL/Linux 계정에서 다음 명령을 실행합니다. 이미 적절한 키가 있다면 계속 사용해도 됩니다.
 
-로컬 Codex 계정의 남은 한도를 대시보드 상단에 표시하려면 `config/servers.yaml`에 다음을 추가합니다. `executable`에는 `command -v codex`의 절대 경로를 사용합니다.
+```bash
+ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519 -C "resourcedeck"
+```
+
+새 host key를 수락하기 전에 SSH가 보여 주는 지문을 서버 콘솔 또는 신뢰할 수 있는 관리자에게서 받은 지문과 비교합니다. 일치하면 수락하면 되고, SSH가 `~/.ssh/known_hosts`에 기록합니다.
+
+```bash
+ssh -o StrictHostKeyChecking=ask remote-user@server.example true
+```
+
+그다음 공개 키를 원격 계정에 등록합니다. `ssh-copy-id`는 원격 계정 비밀번호를 한 번 물어볼 수 있습니다.
+
+```bash
+ssh-copy-id -i ~/.ssh/id_ed25519.pub remote-user@server.example
+```
+
+`ssh-copy-id`를 사용할 수 없다면, 위에서 host key를 검증한 뒤 다음과 같은 동등한 명령을 사용합니다.
+
+```bash
+cat ~/.ssh/id_ed25519.pub | ssh remote-user@server.example 'umask 077; mkdir -p ~/.ssh; cat >> ~/.ssh/authorized_keys'
+```
+
+원격 계정에는 자신의 `~/.ssh/authorized_keys`를 만들고 수정할 권한이 필요합니다. `StrictHostKeyChecking=no` 또는 검증하지 않은 `ssh-keyscan` 결과로 host key 검증을 건너뛰지 마세요.
+
+### 연결 확인하기
+
+`ssh_host`에 넣을 host 이름 또는 SSH alias와 동일한 값을 사용합니다.
+
+```bash
+ssh remote-user@server.example
+```
+
+원격 계정 비밀번호를 묻지 않고 연결되어야 합니다. 개인 키에 passphrase가 있다면 SSH agent를 통해 사용할 수 있게 설정합니다. ResourceDeck은 신뢰된 `known_hosts` 파일이 필요하며 기본 경로는 `~/.ssh/known_hosts`입니다.
+
+### 서버 설정에 추가하기
+
+`config/servers.yaml`에서 host, 계정, tracked user를 설정합니다.
+
+```yaml
+app:
+  bind: 127.0.0.1
+  port: 8765
+
+servers:
+  - id: server-a
+    enabled: true
+    display_name: Server A
+    ssh_host: server.example
+    ssh_user: remote-user
+    ssh_known_hosts: ~/.ssh/known_hosts
+    tracked_users: [remote-user]
+    collectors:
+      gpu: auto
+      docker: auto
+```
+
+- `enabled: false`는 서버를 설정에 남겨 두되 수집을 중지하고 대시보드에서 숨깁니다.
+- `tracked_users`는 서버 상세 화면의 기본 사용자 목록입니다. 비워 두면 기본으로 모든 사용자를 표시합니다.
+- 서버가 GPU 또는 Docker 정보를 제공하지 않는 경우 collector를 `off`로 설정합니다.
+
+## 2. 설치하고 실행하기
+
+Python 환경을 만들고 ResourceDeck을 설치한 뒤, 프런트엔드를 build하고 앱을 실행합니다.
+
+```bash
+python3.12 -m venv .venv
+.venv/bin/pip install -e ".[dev]"
+
+cd frontend
+npm install
+npm run build
+cd ..
+
+.venv/bin/resourcedeck
+```
+
+브라우저에서 <http://127.0.0.1:8765>을 엽니다. 포그라운드 실행은 `Ctrl+C`로 중지합니다.
+
+## 3. 수동 서비스 실행
+
+systemd user service를 수동 모드로 설치합니다. 설치 스크립트는 현재 checkout, `.venv`, `config/servers.yaml`의 절대 경로를 사용합니다.
+
+```bash
+./deploy/service.sh install --manual
+./deploy/service.sh start
+./deploy/service.sh status
+./deploy/service.sh stop
+```
+
+수동 모드는 Windows 로그인 시 또는 WSL이 시작될 때 ResourceDeck을 자동으로 시작하지 않습니다.
+
+## 4. Windows 로그인 후 자동 실행
+
+systemd가 활성화된 WSL 2에서는 앞의 설치와 설정을 마친 뒤 자동 실행을 설치합니다.
+
+```bash
+./deploy/service.sh install --autostart
+```
+
+이 명령은 systemd user service를 enable하고 시작하며, user lingering을 활성화하고 현재 WSL 배포판용 Windows 예약 작업을 만듭니다. 이 작업은 현재 Windows 사용자가 로그인한 뒤에만 WSL을 시작하며, Windows 비밀번호를 저장하지 않고 로그인 전에는 실행되지 않습니다.
+
+자동 실행만 중지하고 수동 서비스 실행은 유지하려면 다음을 사용합니다.
+
+```bash
+./deploy/service.sh disable-autostart
+```
+
+생성된 systemd unit과 Windows 예약 작업을 제거하려면 다음을 사용합니다.
+
+```bash
+./deploy/service.sh uninstall
+```
+
+다른 user service가 user lingering을 사용할 수 있으므로 uninstall은 이를 의도적으로 유지합니다. 사용하지 않음을 확인한 뒤에만 해제합니다.
+
+```bash
+loginctl disable-linger $USER
+```
+
+## 5. 설정 변경하기
+
+ResourceDeck은 약 1초마다 `config/servers.yaml`을 확인합니다. 서버, 수집 주기, collector, tracked user, owner hint, 선택적 Codex provider의 유효한 변경은 서비스를 재시작하지 않아도 적용됩니다. 잘못된 변경이 있어도 마지막 유효 설정은 계속 사용됩니다.
+
+실행 중인 서버가 현재 주소와 포트에 이미 bind되어 있으므로 `app.bind` 또는 `app.port`를 변경한 경우에만 서비스 재시작이 필요합니다.
+
+대시보드의 **Manage servers** 페이지에서는 로컬 머신에서 서버를 추가·수정·삭제·활성/비활성 전환할 수 있습니다. 이 페이지는 동일한 설정 파일을 쓰며 SSH 자격 증명을 저장하지 않습니다.
+
+## 선택 기능: Codex 사용량과 GPU 귀속
+
+로컬에서 로그인한 Codex 계정의 남은 사용량을 표시하려면 다음을 추가합니다. `executable`에는 `command -v codex`가 반환하는 절대 경로를 넣습니다.
 
 ```yaml
 providers:
@@ -77,59 +166,13 @@ providers:
     timeout_seconds: 15
 ```
 
-이 수집기는 App Server 연결을 유지하고 한도 변경 알림을 즉시 반영합니다. 알림이 오지 않을 때는 `poll_seconds`(기본 60초)마다 fallback 조회로 최신 값을 보정하며, `reconnect_seconds`는 연결이 끊겼을 때의 재시도 간격입니다. 로그인·크레딧 구매·한도 reset은 수행하지 않습니다. Codex 사용량은 ChatGPT Work 등과 공유될 수 있습니다. 기본 bind 주소인 `127.0.0.1`을 외부에 공개하면 이 사용량 정보도 함께 노출될 수 있습니다.
+ResourceDeck은 사용량만 읽으며 로그인, 크레딧 구매, reset 실행을 하지 않습니다. 대시보드를 외부에 공개하면 이 사용량 정보도 노출되므로 기본 로컬 bind 주소를 유지하세요.
 
-## Users와 GPU 귀속
+서버 상세 화면에서는 GPU PID → container → owner 귀속을 표시할 수 있습니다. 근거의 신뢰도를 표시하며 원시 cgroup 내용은 노출하지 않습니다.
 
-서버 상세 화면은 `tracked_users`만 먼저 표시합니다. **All users**를 누르면 시스템 계정과 untracked 계정을 포함한 전체 목록을 볼 수 있습니다. tracked user가 현재 실행 중이지 않은 경우에도 시스템 계정을 기본 표시하지 않고 빈 목록을 보여줍니다.
+## 오류 해결
 
-GPU 프로세스 귀속에는 다음 근거와 신뢰도를 표시합니다.
-
-| Source | 의미 | 신뢰도 |
-| --- | --- | --- |
-| `proc_cgroup` | GPU 프로세스 cgroup에서 container ID 확인 | 높음 |
-| `init_pid_ppid_chain` | GPU PID의 부모 체인이 container init PID에 도달 | 중간 |
-| `docker_top` | GPU PID가 `docker top` 결과에 존재 | 낮음 |
-| `unmapped` | container 근거를 찾지 못함 | 없음 |
-
-원시 cgroup 내용은 UI에 노출하지 않습니다.
-
-## Service 설치와 자동 실행
-
-`deploy/service.sh`는 현재 checkout과 가상환경의 절대 경로를 사용해 user unit을 생성합니다. 공유 checkout에 적합한 기본값은 수동 모드입니다.
-
-```bash
-./deploy/service.sh install --manual
-./deploy/service.sh start
-./deploy/service.sh status
-./deploy/service.sh stop
-```
-
-선택적 자동 실행 모드는 user unit을 enable하고 linger를 활성화하며, 현재 WSL 배포판을 위한 Windows 예약 작업을 등록합니다. 이 작업은 현재 Windows 사용자가 로그인한 뒤 WSL을 시작합니다. Windows 비밀번호를 저장하지 않으며 로그인 전에는 실행되지 않습니다.
-
-```bash
-./deploy/service.sh install --autostart
-```
-
-자동 실행만 끄고 수동 실행 가능한 unit은 유지하려면 다음을 실행합니다.
-
-```bash
-./deploy/service.sh disable-autostart
-```
-
-생성된 unit과 Windows 예약 작업을 모두 제거하려면 다음을 실행합니다.
-
-```bash
-./deploy/service.sh uninstall
-```
-
-다른 user service가 linger를 사용 중일 수 있으므로 uninstall은 linger를 유지합니다. 안전을 확인한 뒤에만 별도로 해제합니다.
-
-```bash
-loginctl disable-linger $USER
-```
-
-유용한 service 진단 명령입니다.
+먼저 다음 명령으로 상태와 로그를 확인합니다.
 
 ```bash
 systemctl --user is-active resourcedeck.service
@@ -137,17 +180,11 @@ journalctl --user -u resourcedeck.service -f
 curl http://127.0.0.1:8765/healthz
 ```
 
-## 검증
-
-```bash
-.venv/bin/pytest -q -s
-cd frontend && npm test && npm run build && npm audit --audit-level=moderate
-```
-
-GPU workload가 Docker container 내부에서 실행 중일 때 다음 명령으로 GPU PID → container → owner 귀속을 확인합니다.
-
-```bash
-./scripts/verify_live_mapping.py
-```
-
-현재 매핑이 없으면 exit code 2를 반환합니다. 이 명령은 container나 workload를 시작하지 않습니다.
+| 증상 | 확인 및 해결 |
+| --- | --- |
+| 대시보드가 열리지 않거나 서비스가 비활성 상태 | `./deploy/service.sh status`를 실행하고 `./deploy/service.sh start`로 시작합니다. 시작 오류는 service log를 확인합니다. 포그라운드로 실행했다면 `.venv/bin/resourcedeck`을 시작한 터미널을 유지해야 합니다. |
+| `/healthz`에 `config_file_missing` 또는 설정 reload 오류가 표시됨 | `config/servers.yaml`이 존재하고 올바른 YAML인지 확인합니다. 잘못된 변경은 현재 활성 설정을 바꾸지 않으므로 파일을 수정한 뒤 약 1초 기다립니다. |
+| 서버가 Offline/Degraded이거나 snapshot이 없음 | ResourceDeck을 실행하는 머신에서 설정한 `ssh_host`, 사용자, 키와 정확히 같은 값으로 `ssh`를 실행합니다. 대상 계정, 네트워크 접근, `ssh_known_hosts` 경로, 신뢰한 지문과 host key의 일치를 확인합니다. 대시보드나 로그에서 collector별 오류도 확인합니다. |
+| bind 주소 또는 포트를 바꿨는데 반영되지 않음 | 실행 중인 앱을 재시작하거나 `./deploy/service.sh stop` 후 `./deploy/service.sh start`를 실행합니다. 재시작이 필요한 설정은 `app.bind`, `app.port`뿐입니다. |
+| Codex 사용량을 볼 수 없음 | `providers.codex.enabled`가 true인지, `executable`이 존재하는 절대 경로인지, 로컬 Codex 계정이 로그인 상태인지 확인합니다. 대시보드는 연결을 재시도하는 동안 사용량을 사용할 수 없다고 표시합니다. |
+| Windows 로그인 후 자동 실행되지 않음 | WSL systemd 활성화 여부를 확인하고 `./deploy/service.sh install --autostart`를 다시 실행합니다. `ResourceDeck-<WSL distribution>` 이름의 Windows 예약 작업이 있는지도 확인합니다. |

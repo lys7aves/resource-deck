@@ -15,18 +15,18 @@ providers:
     reconnect_seconds: 15
     timeout_seconds: 15
 servers:
-  - id: server-b
+  - id: server-a
     enabled: true
-    display_name: server-b
-    ssh_host: server-b
-    ssh_user: yuseop
+    display_name: Server A
+    ssh_host: server.example
+    ssh_user: monitor-user
     ssh_known_hosts: ~/.ssh/known_hosts
-    tracked_users: [yuseop]
+    tracked_users: [monitor-user]
     collectors:
       gpu: auto
       docker: auto
     owner_hints:
       compose_projects:
-        project-a: yuseop
+        project-a: monitor-user
       home_prefixes:
-        /home/yuseop: yuseop
+        /home/monitor-user: monitor-user

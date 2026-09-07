@@ -2,70 +2,159 @@
 
 [한국어 문서](README.ko.md)
 
-ResourceDeck is an agentless, read-only resource dashboard for a small group of Linux servers. It collects system, GPU, user, Docker, and GPU-process attribution data over SSH. It never sends Docker lifecycle, process-control, or remote configuration commands.
+ResourceDeck is a local, read-only dashboard for monitoring a small group of Linux servers over SSH. It shows system, GPU, user, Docker, and GPU-process attribution data without installing an agent on the monitored servers.
 
-## Features
-
-- Live server snapshots delivered through Server-Sent Events.
-- Automatic reload of `config/servers.yaml` for server definitions, polling intervals, collectors, `tracked_users`, and owner hints. Invalid configurations keep the last valid configuration active.
-- Local server management UI for adding, editing, deleting, and enabling/disabling servers without editing YAML directly.
-- Default tracked-user view with an All users toggle.
-- GPU PID-to-container-to-owner evidence in the server detail view.
-- Read-only live verification command for GPU Docker attribution.
+It never sends Docker lifecycle, process-control, or remote-configuration commands. The dashboard binds to `127.0.0.1` by default, and it does not store SSH passwords or private keys.
 
 ## Requirements
 
-- Python 3.12 or later.
-- SSH aliases with trusted host keys in `$HOME/.ssh/known_hosts`, or an explicit `ssh_known_hosts` path per server.
-- Node.js 18 or later for the frontend build and tests.
-- Optional: WSL 2 with systemd and Windows PowerShell for Windows sign-in autostart.
+- Python 3.12 or later
+- Node.js 18 or later to build the frontend
+- An SSH account on every monitored Linux server
+- For Windows sign-in autostart: WSL 2 with systemd enabled and Windows PowerShell
 
-## Quick start
+## 1. Prepare server access
 
-1. Create the local server configuration.
-
-   ```bash
-   cp config/servers.example.yaml config/servers.yaml
-   ```
-
-2. Set the SSH hosts, users, tracked users, collectors, and owner hints. `tracked_users` is the default Users view; if it is empty, all users are shown by default.
-
-3. Create a virtual environment and install the backend.
-
-   ```bash
-   python3.12 -m venv .venv
-   .venv/bin/pip install -e ".[dev]"
-   ```
-
-4. Build the frontend and start the application.
-
-   ```bash
-   cd frontend
-   npm install
-   npm run build
-   cd ..
-   .venv/bin/resourcedeck
-   ```
-
-Open <http://127.0.0.1:8765>.
-
-## Configuration reload and diagnostics
-
-`config/servers.yaml` is checked approximately once per second. Valid changes are applied without restarting the API process. A server added or changed in the file receives a new poller; a removed server is removed from the snapshot stream.
-
-Each server may set `enabled: false`. Disabled servers remain in the configuration management screen but are not polled or shown on the dashboard. The **Manage servers** panel writes changes atomically and is available only from the local machine; SSH credentials are never stored by ResourceDeck.
-
-`app.bind` and `app.port` require a service restart because Uvicorn is already bound to the current address and port. Check reload status at:
+### Create the configuration file
 
 ```bash
-curl http://127.0.0.1:8765/healthz
+cp config/servers.example.yaml config/servers.yaml
 ```
 
-The response includes the last successful reload time, any reload error, and fields that require a restart.
+### Register an SSH key
 
-## Codex usage
+Run these commands in the WSL/Linux account that will run ResourceDeck. If you already have a suitable key, keep using it.
 
-To show the remaining allowance for the locally signed-in Codex account at the top of the dashboard, add the following to `config/servers.yaml`. Set `executable` to the absolute path returned by `command -v codex`.
+```bash
+ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519 -C "resourcedeck"
+```
+
+Before accepting a new host key, compare the fingerprint shown by SSH with a fingerprint obtained from the server console or a trusted administrator. Once it matches, accept it; SSH records it in `~/.ssh/known_hosts`.
+
+```bash
+ssh -o StrictHostKeyChecking=ask remote-user@server.example true
+```
+
+Then register the public key for the remote account. `ssh-copy-id` may ask for the remote account password once.
+
+```bash
+ssh-copy-id -i ~/.ssh/id_ed25519.pub remote-user@server.example
+```
+
+If `ssh-copy-id` is unavailable, use this equivalent command after verifying the host key as above:
+
+```bash
+cat ~/.ssh/id_ed25519.pub | ssh remote-user@server.example 'umask 077; mkdir -p ~/.ssh; cat >> ~/.ssh/authorized_keys'
+```
+
+The remote account needs permission to create and update its own `~/.ssh/authorized_keys`. Do not bypass host-key verification with `StrictHostKeyChecking=no` or an unverified `ssh-keyscan` result.
+
+### Test the connection
+
+Use the same host name or SSH alias that you will put in `ssh_host`.
+
+```bash
+ssh remote-user@server.example
+```
+
+The connection should succeed without asking for the remote account password. If the private key has a passphrase, make it available through an SSH agent. ResourceDeck requires a trusted `known_hosts` file; the default is `~/.ssh/known_hosts`.
+
+### Add the server to the configuration
+
+Set the host, account, and tracked users in `config/servers.yaml`.
+
+```yaml
+app:
+  bind: 127.0.0.1
+  port: 8765
+
+servers:
+  - id: server-a
+    enabled: true
+    display_name: Server A
+    ssh_host: server.example
+    ssh_user: remote-user
+    ssh_known_hosts: ~/.ssh/known_hosts
+    tracked_users: [remote-user]
+    collectors:
+      gpu: auto
+      docker: auto
+```
+
+- `enabled: false` keeps the server in the configuration but stops polling and hides it from the dashboard.
+- `tracked_users` is the default user list in the server detail view. Leave it empty to show all users by default.
+- Set a collector to `off` when the server does not provide GPU or Docker data.
+
+## 2. Install and start
+
+Create the Python environment, install ResourceDeck, build the frontend, then start the app.
+
+```bash
+python3.12 -m venv .venv
+.venv/bin/pip install -e ".[dev]"
+
+cd frontend
+npm install
+npm run build
+cd ..
+
+.venv/bin/resourcedeck
+```
+
+Open <http://127.0.0.1:8765>. Stop this foreground process with `Ctrl+C`.
+
+## 3. Run manually as a service
+
+Install a systemd user service in manual mode. The installer uses the absolute paths of this checkout, `.venv`, and `config/servers.yaml`.
+
+```bash
+./deploy/service.sh install --manual
+./deploy/service.sh start
+./deploy/service.sh status
+./deploy/service.sh stop
+```
+
+Manual mode does not start ResourceDeck at Windows sign-in or on its own after WSL starts.
+
+## 4. Start automatically after Windows sign-in
+
+On WSL 2 with systemd enabled, install autostart after completing the installation and configuration above.
+
+```bash
+./deploy/service.sh install --autostart
+```
+
+This enables and starts the systemd user service, enables user lingering, and creates a Windows Scheduled Task for the current WSL distribution. The task starts WSL only after the current Windows user signs in; it neither stores a Windows password nor runs before sign-in.
+
+To stop automatic execution but keep the service available for manual starts:
+
+```bash
+./deploy/service.sh disable-autostart
+```
+
+To remove the generated systemd unit and Windows Scheduled Task:
+
+```bash
+./deploy/service.sh uninstall
+```
+
+Uninstall intentionally leaves user lingering enabled because another user service may need it. Disable it only after confirming that it is unused:
+
+```bash
+loginctl disable-linger $USER
+```
+
+## 5. Change configuration
+
+ResourceDeck checks `config/servers.yaml` about once per second. Valid changes to servers, polling intervals, collectors, tracked users, owner hints, and the optional Codex provider apply without restarting the service. Invalid changes keep the last valid configuration active.
+
+Changing `app.bind` or `app.port` requires a service restart because the running server is already bound to its current address and port.
+
+The dashboard's **Manage servers** page can add, edit, delete, and enable or disable servers from the local machine. It writes the same configuration file and never stores SSH credentials.
+
+## Optional: Codex usage and GPU attribution
+
+To show remaining usage for the locally signed-in Codex account, add the following. Use the absolute path returned by `command -v codex`.
 
 ```yaml
 providers:
@@ -77,59 +166,13 @@ providers:
     timeout_seconds: 15
 ```
 
-The collector keeps an App Server connection open and applies rate-limit change notifications immediately. `poll_seconds` (default: 60) is a fallback read interval when no notification arrives; `reconnect_seconds` controls retry delay after a disconnect. It never logs in, buys credits, or consumes a reset. Codex usage may be shared with ChatGPT Work and other eligible agentic features. Keeping the default `127.0.0.1` bind is important: exposing the dashboard also exposes this usage data.
+ResourceDeck only reads usage data; it never signs in, purchases credits, or consumes resets. Keep the default local bind address, because exposing the dashboard would also expose this usage data.
 
-## Users and GPU attribution
+The server detail view can show GPU PID-to-container-to-owner attribution. It displays the evidence confidence and never exposes raw cgroup contents.
 
-The server detail view starts with `tracked_users` only. Select **All users** to show system and untracked accounts. When no tracked user is currently running, the default list is intentionally empty rather than falling back to system accounts.
+## Troubleshooting
 
-GPU process attribution is displayed with its confidence and source:
-
-| Source | Meaning | Confidence |
-| --- | --- | --- |
-| `proc_cgroup` | Container ID found in the GPU process cgroup | High |
-| `init_pid_ppid_chain` | GPU PID ancestry reaches a container init PID | Medium |
-| `docker_top` | GPU PID appears in `docker top` | Low |
-| `unmapped` | No container evidence was available | None |
-
-Raw cgroup contents are never exposed in the UI.
-
-## Service installation and autostart
-
-`deploy/service.sh` creates a user unit using the absolute path of the current checkout and virtual environment. The default is manual mode, which is appropriate for a shared checkout.
-
-```bash
-./deploy/service.sh install --manual
-./deploy/service.sh start
-./deploy/service.sh status
-./deploy/service.sh stop
-```
-
-Optional autostart enables the user unit, enables linger, and registers a Windows Scheduled Task for the active WSL distribution. The task starts WSL after the current Windows user signs in; it does not store a Windows password and does not run before sign-in.
-
-```bash
-./deploy/service.sh install --autostart
-```
-
-To stop automatic execution while retaining the unit for manual starts:
-
-```bash
-./deploy/service.sh disable-autostart
-```
-
-To remove the generated unit and Windows task:
-
-```bash
-./deploy/service.sh uninstall
-```
-
-The uninstall command intentionally leaves linger enabled because other user services might use it. After checking that it is safe, disable it separately:
-
-```bash
-loginctl disable-linger $USER
-```
-
-Useful service diagnostics:
+Use these commands first:
 
 ```bash
 systemctl --user is-active resourcedeck.service
@@ -137,17 +180,11 @@ journalctl --user -u resourcedeck.service -f
 curl http://127.0.0.1:8765/healthz
 ```
 
-## Verification
-
-```bash
-.venv/bin/pytest -q -s
-cd frontend && npm test && npm run build && npm audit --audit-level=moderate
-```
-
-To verify live GPU PID-to-container-to-owner attribution, run the following while a GPU workload is running inside a Docker container:
-
-```bash
-./scripts/verify_live_mapping.py
-```
-
-It returns exit code 2 when no live mapping exists. It does not start containers or workloads.
+| Symptom | Check and resolution |
+| --- | --- |
+| The dashboard does not open or the service is inactive | Run `./deploy/service.sh status`, then `./deploy/service.sh start`. Follow the service log for startup errors. If you run it in the foreground, start `.venv/bin/resourcedeck` and keep that terminal open. |
+| `config_file_missing` or a configuration reload error appears in `/healthz` | Confirm that `config/servers.yaml` exists and is valid YAML. A malformed change does not replace the currently active configuration; correct the file and wait about one second. |
+| A server is Offline, Degraded, or has no snapshot | From the ResourceDeck machine, run `ssh` with the exact configured `ssh_host`, user, and key. Confirm the target account, network access, `ssh_known_hosts` path, and that the host key matches the trusted fingerprint. Check the dashboard or log for collector-specific errors. |
+| A changed bind address or port has no effect | Restart the running app or execute `./deploy/service.sh stop` followed by `./deploy/service.sh start`. Only `app.bind` and `app.port` require this restart. |
+| Codex usage is unavailable | Confirm that `providers.codex.enabled` is true, `executable` is an absolute existing path, and the local Codex account is signed in. The dashboard reports unavailable usage while it retries the connection. |
+| Autostart does not run after Windows sign-in | Confirm WSL systemd is enabled, rerun `./deploy/service.sh install --autostart`, and check that the Windows Scheduled Task named `ResourceDeck-<WSL distribution>` exists. |
