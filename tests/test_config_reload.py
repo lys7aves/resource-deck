@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from resourcedeck.config import CodexProviderSettings, PollingSettings, ServerSettings, Settings
+from resourcedeck.config import AppSettings, CodexProviderSettings, PollingSettings, ServerSettings, Settings
 from resourcedeck.main import ConfigWatcher
 from resourcedeck.models import ServerSnapshot
 from resourcedeck.scheduler import PollingOrchestrator
@@ -71,3 +71,17 @@ async def test_config_watcher_keeps_last_valid_configuration(tmp_path: Path):
 def test_duplicate_server_ids_are_rejected():
     with pytest.raises(ValueError, match="server IDs must be unique"):
         Settings.model_validate({"servers": [{"id": "same", "ssh_host": "one"}, {"id": "same", "ssh_host": "two"}]})
+
+
+@pytest.mark.parametrize(
+    ("bind", "expected"),
+    [("localhost", "127.0.0.1"), ("LOCALHOST", "127.0.0.1"), ("127.0.0.1", "127.0.0.1"), ("127.0.0.2", "127.0.0.2"), ("::1", "::1")],
+)
+def test_loopback_bind_addresses_are_accepted(bind: str, expected: str):
+    assert AppSettings(bind=bind).bind == expected
+
+
+@pytest.mark.parametrize("bind", ["0.0.0.0", "::", "192.168.1.10", "dashboard.example", " localhost "])
+def test_non_loopback_bind_addresses_are_rejected(bind: str):
+    with pytest.raises(ValueError, match="loopback"):
+        AppSettings(bind=bind)

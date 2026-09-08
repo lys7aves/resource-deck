@@ -1,14 +1,28 @@
 from __future__ import annotations
 
+import ipaddress
 from pathlib import Path
 
 import yaml
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class AppSettings(BaseModel):
     bind: str = "127.0.0.1"
     port: int = 8765
+
+    @field_validator("bind")
+    @classmethod
+    def bind_must_be_loopback(cls, value: str) -> str:
+        if value.lower() == "localhost":
+            return "127.0.0.1"
+        try:
+            address = ipaddress.ip_address(value)
+        except ValueError as error:
+            raise ValueError("app.bind must be localhost or a loopback IP address") from error
+        if not address.is_loopback:
+            raise ValueError("app.bind must be localhost or a loopback IP address")
+        return value
 
 
 class PollingSettings(BaseModel):

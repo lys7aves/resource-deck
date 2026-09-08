@@ -1,23 +1,99 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import json
 import os
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import AsyncIterator
+from urllib.parse import urlsplit
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from .config import ServerSettings, Settings, load_settings
 from .config_store import ConfigStore
 from .models import utcnow
 from .scheduler import PollingOrchestrator
 from .state import SnapshotStore
+
+
+FRONTEND_DIR = Path(__file__).parents[3] / "frontend" / "dist"
+
+
+def is_loopback_host(host: str | None) -> bool:
+    if host is None:
+        return False
+    if host.lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def request_host(scope: Scope) -> str | None:
+    values = [value.decode("latin-1") for name, value in scope["headers"] if name.lower() == b"host"]
+    if len(values) != 1:
+        return None
+    authority = values[0]
+    if not authority or any(character.isspace() for character in authority) or "@" in authority:
+        return None
+    if authority.startswith("["):
+        closing = authority.find("]")
+        if closing < 0:
+            return None
+        host, remainder = authority[1:closing], authority[closing + 1:]
+        if not host or (remainder and not remainder.startswith(":")):
+            return None
+        port = remainder[1:] if remainder else None
+    else:
+        if authority.count(":") > 1:
+            return None
+        host, separator, port = authority.partition(":")
+        if not host:
+            return None
+        if not separator:
+            port = None
+    if port is not None and (not port.isdecimal() or not 1 <= int(port) <= 65535):
+        return None
+    return host
+
+
+def is_allowed_origin(scope: Scope) -> bool:
+    values = [value.decode("latin-1") for name, value in scope["headers"] if name.lower() == b"origin"]
+    if not values:
+        return True
+    if len(values) != 1:
+        return False
+    try:
+        origin = urlsplit(values[0])
+        port = origin.port
+    except ValueError:
+        return False
+    if origin.scheme not in {"http", "https"} or not origin.netloc or origin.username or origin.password:
+        return False
+    if origin.path or origin.query or origin.fragment:
+        return False
+    if port is not None and not 1 <= port <= 65535:
+        return False
+    return is_loopback_host(origin.hostname)
+
+
+class LoopbackHostMiddleware:
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] == "http" and not is_loopback_host(request_host(scope)):
+            await JSONResponse(status_code=400, content={"detail": "A loopback Host header is required"})(scope, receive, send)
+            return
+        await self.app(scope, receive, send)
 
 
 class ConfigWatcher:
@@ -102,10 +178,17 @@ def create_app(settings: Settings | None = None, *, config_path: str | Path | No
     app.state.config_watcher = watcher
     app.state.config_store = config_store
 
+    app.add_middleware(LoopbackHostMiddleware)
+
     def require_local(request: Request) -> None:
         host = request.client.host if request.client else None
-        if host not in {"127.0.0.1", "::1", "localhost"}:
+        if not is_loopback_host(host):
             raise HTTPException(403, "Server management is only available from the local machine")
+
+    def require_local_management(request: Request) -> None:
+        require_local(request)
+        if not is_allowed_origin(request.scope):
+            raise HTTPException(403, "Server management requires a loopback Origin")
 
     async def save_servers(request: Request, servers: list) -> list:
         require_local(request)
@@ -142,13 +225,15 @@ def create_app(settings: Settings | None = None, *, config_path: str | Path | No
         return store.servers()
 
     @app.get("/api/v1/config/servers")
-    async def configured_servers():
+    async def configured_servers(request: Request):
+        require_local_management(request)
         if not watcher:
             raise HTTPException(503, "Configuration management is unavailable")
         return [server.model_dump(mode="json") for server in watcher.settings.servers]
 
     @app.post("/api/v1/config/servers")
     async def add_server(request: Request, server: ServerSettings):
+        require_local_management(request)
         if not watcher or not config_store:
             raise HTTPException(503, "Configuration file is not writable")
         existing = list(watcher.settings.servers)
@@ -158,6 +243,7 @@ def create_app(settings: Settings | None = None, *, config_path: str | Path | No
 
     @app.put("/api/v1/config/servers/{server_id}")
     async def update_server(server_id: str, request: Request, server: ServerSettings):
+        require_local_management(request)
         if server.id != server_id:
             raise HTTPException(400, "Server ID cannot be changed")
         if not watcher:
@@ -169,6 +255,7 @@ def create_app(settings: Settings | None = None, *, config_path: str | Path | No
 
     @app.patch("/api/v1/config/servers/{server_id}/enabled")
     async def toggle_server(server_id: str, request: Request, enabled: bool):
+        require_local_management(request)
         if not watcher:
             raise HTTPException(503, "Configuration management is unavailable")
         existing = list(watcher.settings.servers)
@@ -178,6 +265,7 @@ def create_app(settings: Settings | None = None, *, config_path: str | Path | No
 
     @app.delete("/api/v1/config/servers/{server_id}")
     async def delete_server(server_id: str, request: Request):
+        require_local_management(request)
         if not watcher:
             raise HTTPException(503, "Configuration management is unavailable")
         existing = list(watcher.settings.servers)
@@ -219,13 +307,12 @@ def create_app(settings: Settings | None = None, *, config_path: str | Path | No
                 yield f"event: providers\nid: {revision}\ndata: " + json.dumps([item.model_dump(mode="json") for item in store.providers()]) + "\n\n"
         return StreamingResponse(stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
-    frontend = Path(__file__).parents[3] / "frontend" / "dist"
+    frontend = FRONTEND_DIR
     if frontend.exists():
         app.mount("/assets", StaticFiles(directory=frontend / "assets"), name="assets")
         @app.get("/{path:path}", include_in_schema=False)
         async def spa(path: str):
-            target = frontend / path
-            return FileResponse(target) if path and target.is_file() else FileResponse(frontend / "index.html")
+            return FileResponse(frontend / "index.html")
     return app
 
 

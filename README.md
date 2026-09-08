@@ -4,7 +4,7 @@
 
 ResourceDeck is a local, read-only dashboard for monitoring a small group of Linux servers over SSH. It shows system, GPU, user, Docker, and GPU-process attribution data without installing an agent on the monitored servers.
 
-It never sends Docker lifecycle, process-control, or remote-configuration commands. The dashboard binds to `127.0.0.1` by default, and it does not store SSH passwords or private keys.
+It never sends Docker lifecycle, process-control, or remote-configuration commands. The dashboard is local-only: it accepts only `localhost` or loopback IP bind addresses, validates local browser requests, and does not store SSH passwords or private keys.
 
 ## Requirements
 
@@ -148,7 +148,7 @@ loginctl disable-linger $USER
 
 ResourceDeck checks `config/servers.yaml` about once per second. Valid changes to servers, polling intervals, collectors, tracked users, owner hints, and the optional Codex provider apply without restarting the service. Invalid changes keep the last valid configuration active.
 
-Changing `app.bind` or `app.port` requires a service restart because the running server is already bound to its current address and port.
+Changing `app.bind` or `app.port` requires a service restart because the running server is already bound to its current address and port. `app.bind` must be `localhost` or a loopback IP address such as `127.0.0.1` or `::1`; external, wildcard, and LAN addresses are rejected.
 
 The dashboard's **Manage servers** page can add, edit, delete, and enable or disable servers from the local machine. It writes the same configuration file and never stores SSH credentials.
 
@@ -166,7 +166,7 @@ providers:
     timeout_seconds: 15
 ```
 
-ResourceDeck only reads usage data; it never signs in, purchases credits, or consumes resets. Keep the default local bind address, because exposing the dashboard would also expose this usage data.
+ResourceDeck only reads usage data; it never signs in, purchases credits, or consumes resets. The dashboard only accepts local connections, including when Codex usage is enabled.
 
 The server detail view can show GPU PID-to-container-to-owner attribution. It displays the evidence confidence and never exposes raw cgroup contents.
 
@@ -186,5 +186,6 @@ curl http://127.0.0.1:8765/healthz
 | `config_file_missing` or a configuration reload error appears in `/healthz` | Confirm that `config/servers.yaml` exists and is valid YAML. A malformed change does not replace the currently active configuration; correct the file and wait about one second. |
 | A server is Offline, Degraded, or has no snapshot | From the ResourceDeck machine, run `ssh` with the exact configured `ssh_host`, user, and key. Confirm the target account, network access, `ssh_known_hosts` path, and that the host key matches the trusted fingerprint. Check the dashboard or log for collector-specific errors. |
 | A changed bind address or port has no effect | Restart the running app or execute `./deploy/service.sh stop` followed by `./deploy/service.sh start`. Only `app.bind` and `app.port` require this restart. |
+| The app rejects a bind address | Use `localhost`, `127.0.0.1`, or `::1`. ResourceDeck does not support wildcard, LAN, or external bind addresses. |
 | Codex usage is unavailable | Confirm that `providers.codex.enabled` is true, `executable` is an absolute existing path, and the local Codex account is signed in. The dashboard reports unavailable usage while it retries the connection. |
 | Autostart does not run after Windows sign-in | Confirm WSL systemd is enabled, rerun `./deploy/service.sh install --autostart`, and check that the Windows Scheduled Task named `ResourceDeck-<WSL distribution>` exists. |
