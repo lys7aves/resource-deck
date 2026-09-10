@@ -7,9 +7,10 @@ from .models import ProviderSnapshot, ServerSnapshot
 
 
 class SnapshotStore:
-    def __init__(self) -> None:
+    def __init__(self, server_order: list[str] | None = None) -> None:
         self._servers: dict[str, ServerSnapshot] = {}
         self._providers: dict[str, ProviderSnapshot] = {}
+        self._server_order = server_order or []
         self._revision = 0
         self._condition = asyncio.Condition()
 
@@ -46,8 +47,22 @@ class SnapshotStore:
             self._condition.notify_all()
             return True
 
+    async def set_server_order(self, server_order: list[str]) -> bool:
+        """Publish a configuration-only server ordering change."""
+        async with self._condition:
+            if self._server_order == server_order:
+                return False
+            self._server_order = list(server_order)
+            self._revision += 1
+            self._condition.notify_all()
+            return True
+
     def servers(self) -> list[ServerSnapshot]:
-        return sorted(self._servers.values(), key=lambda item: item.display_name)
+        positions = {server_id: index for index, server_id in enumerate(self._server_order)}
+        return sorted(
+            self._servers.values(),
+            key=lambda item: (positions.get(item.server_id, len(positions)), item.display_name),
+        )
 
     def server(self, server_id: str) -> ServerSnapshot | None:
         return self._servers.get(server_id)

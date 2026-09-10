@@ -1,5 +1,8 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { addConfiguredServer, deleteConfiguredServer, getConfiguredServers, getProviders, getServers, setServerEnabled, subscribe, updateConfiguredServer } from "./api";
+import { DndContext, KeyboardSensor, PointerSensor, closestCenter, useSensor, useSensors, type DragEndEvent } from "@dnd-kit/core";
+import { SortableContext, rectSortingStrategy, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
+import { addConfiguredServer, deleteConfiguredServer, getConfiguredServers, getProviders, getServers, reorderConfiguredServer, setServerEnabled, subscribe, updateConfiguredServer } from "./api";
 import { bytes, mib, percent } from "./format";
 import type { CodexUsageBucket, CodexUsageWindow, ConfigServer, Container, GpuProcess, ProviderSnapshot, Server, User } from "./types";
 import "./styles.css";
@@ -128,6 +131,25 @@ function Card({ server, onOpen }: { server: Server; onOpen: () => void }) {
   </button>;
 }
 
+function moveRelative<T extends { id: string }>(items: T[], sourceId: string, targetId: string, position: "before" | "after"): T[] {
+  if (sourceId === targetId) return items;
+  const source = items.find((item) => item.id === sourceId);
+  const target = items.find((item) => item.id === targetId);
+  if (!source || !target) return items;
+  const remaining = items.filter((item) => item.id !== sourceId);
+  const targetIndex = remaining.findIndex((item) => item.id === targetId);
+  remaining.splice(targetIndex + (position === "after" ? 1 : 0), 0, source);
+  return remaining;
+}
+
+function SortableCard({ server, onOpen, disabled }: { server: Server; onOpen: () => void; disabled: boolean }) {
+  const sortable = useSortable({ id: server.server_id, disabled });
+  return <div ref={sortable.setNodeRef} className={`card-wrapper${sortable.isDragging ? " dragging" : ""}`} style={{ transform: CSS.Transform.toString(sortable.transform), transition: sortable.transition }}>
+    <button className="drag-handle card-drag-handle" aria-label="카드 순서 변경" disabled={disabled} {...sortable.attributes} {...sortable.listeners}>⠿</button>
+    <Card server={server} onOpen={onOpen} />
+  </div>;
+}
+
 const mappingLabels: Record<string, string> = {
   proc_cgroup: "cgroup match · high confidence",
   init_pid_ppid_chain: "container init PID ancestry · medium confidence",
@@ -163,7 +185,7 @@ function Detail({ server, close }: { server: Server; close: () => void }) {
 
 const blankConfig = (): ConfigServer => ({ id: "", enabled: true, display_name: "", ssh_host: "", ssh_user: "", ssh_port: 22, ssh_known_hosts: "~/.ssh/known_hosts", tracked_users: [], collectors: { gpu: "auto", docker: "auto" }, owner_hints: { compose_projects: {}, home_prefixes: {} } });
 
-function ServerManagement({ close }: { close: () => void }) {
+function LegacyServerManagement({ close }: { close: () => void }) {
   const [items, setItems] = useState<ConfigServer[]>([]);
   const [editing, setEditing] = useState<ConfigServer | null>(null);
   const [editingExisting, setEditingExisting] = useState(false);
@@ -180,15 +202,100 @@ function ServerManagement({ close }: { close: () => void }) {
   return <main className="management"><button className="back" onClick={close}>← Dashboard</button><header className="management-header"><div><p className="caption">SERVER CONFIGURATION</p><h1>Manage servers</h1></div><button className="manage-button" onClick={() => begin(blankConfig(), false)}>＋ Add server</button></header>{error && <p className="error">{error}</p>}<div className="server-list">{items.map((item) => <div className="server-row" key={item.id}><button className={`server-enabled ${item.enabled ? "on" : ""}`} aria-label={`${item.display_name || item.id} ${item.enabled ? "enabled" : "disabled"}`} onClick={() => toggle(item)}>{item.enabled ? "ON" : "OFF"}</button><div><strong>{item.display_name || item.id}</strong><small>{item.ssh_user ? `${item.ssh_user}@` : ""}{item.ssh_host}:{item.ssh_port}</small></div><button className="row-action" onClick={() => begin(item)}>Edit</button><button className="row-action danger" onClick={() => remove(item)}>Delete</button></div>)}</div>{editing && <form className="server-form" onSubmit={save}><div className="form-header"><h2>{editingExisting ? "Edit server" : "Add server"}</h2><button type="button" className="row-action" onClick={() => setEditing(null)}>Cancel</button></div><label>ID<input required pattern="[A-Za-z0-9_-]+" disabled={editingExisting} value={editing.id} onChange={(event) => setEditing({ ...editing, id: event.target.value })} /></label><label>Display name<input value={editing.display_name ?? ""} onChange={(event) => setEditing({ ...editing, display_name: event.target.value })} /></label><label>SSH host<input required value={editing.ssh_host} onChange={(event) => setEditing({ ...editing, ssh_host: event.target.value })} /></label><div className="form-grid"><label>SSH user<input value={editing.ssh_user ?? ""} onChange={(event) => setEditing({ ...editing, ssh_user: event.target.value })} /></label><label>SSH port<input type="number" min="1" max="65535" required value={editing.ssh_port} onChange={(event) => setEditing({ ...editing, ssh_port: Number(event.target.value) })} /></label></div><label>Known hosts path<input required value={editing.ssh_known_hosts} onChange={(event) => setEditing({ ...editing, ssh_known_hosts: event.target.value })} /></label><label>Tracked users <small>(comma separated)</small><input value={tracked} onChange={(event) => setTracked(event.target.value)} /></label><div className="form-grid"><label>GPU collector<select value={editing.collectors.gpu} onChange={(event) => setEditing({ ...editing, collectors: { ...editing.collectors, gpu: event.target.value } })}><option>auto</option><option>off</option></select></label><label>Docker collector<select value={editing.collectors.docker} onChange={(event) => setEditing({ ...editing, collectors: { ...editing.collectors, docker: event.target.value }})}><option>auto</option><option>off</option></select></label></div><label>Compose project owners <textarea value={compose} onChange={(event) => setCompose(event.target.value)} /></label><label>Home prefix owners <textarea value={homes} onChange={(event) => setHomes(event.target.value)} /></label><button className="save-button" disabled={saving}>{saving ? "Saving…" : "Save server"}</button></form>}</main>;
 }
 
+function moveServerRelative(items: Server[], sourceId: string, targetId: string, position: "before" | "after"): Server[] {
+  if (sourceId === targetId) return items;
+  const source = items.find((item) => item.server_id === sourceId);
+  const target = items.find((item) => item.server_id === targetId);
+  if (!source || !target) return items;
+  const remaining = items.filter((item) => item.server_id !== sourceId);
+  const targetIndex = remaining.findIndex((item) => item.server_id === targetId);
+  remaining.splice(targetIndex + (position === "after" ? 1 : 0), 0, source);
+  return remaining;
+}
+
+function SortableServerRow({ item, index, items, disabled, onEdit, onToggle, onRemove, onMove }: {
+  item: ConfigServer; index: number; items: ConfigServer[]; disabled: boolean; onEdit: (item: ConfigServer) => void;
+  onToggle: (item: ConfigServer) => void; onRemove: (item: ConfigServer) => void;
+  onMove: (serverId: string, targetId: string, position: "before" | "after") => void;
+}) {
+  const sortable = useSortable({ id: item.id, disabled });
+  const previous = items[index - 1];
+  const next = items[index + 1];
+  return <div ref={sortable.setNodeRef} className={`server-row${sortable.isDragging ? " dragging" : ""}`} style={{ transform: CSS.Transform.toString(sortable.transform), transition: sortable.transition }}>
+    <button className="drag-handle" aria-label="서버 순서 변경" disabled={disabled} {...sortable.attributes} {...sortable.listeners}>⠿</button>
+    <button className={`server-enabled ${item.enabled ? "on" : ""}`} aria-label={`${item.display_name || item.id} ${item.enabled ? "enabled" : "disabled"}`} onClick={() => onToggle(item)} disabled={disabled}>{item.enabled ? "ON" : "OFF"}</button>
+    <div className="server-description"><strong>{item.display_name || item.id}</strong><small>{item.ssh_user ? `${item.ssh_user}@` : ""}{item.ssh_host}:{item.ssh_port}</small></div>
+    <div className="move-actions"><button className="row-action" aria-label={`${item.display_name || item.id} 위로 이동`} disabled={disabled || !previous} onClick={() => previous && onMove(item.id, previous.id, "before")}>↑</button><button className="row-action" aria-label={`${item.display_name || item.id} 아래로 이동`} disabled={disabled || !next} onClick={() => next && onMove(item.id, next.id, "after")}>↓</button></div>
+    <button className="row-action" onClick={() => onEdit(item)} disabled={disabled}>Edit</button><button className="row-action danger" onClick={() => onRemove(item)} disabled={disabled}>Delete</button>
+  </div>;
+}
+
+function ServerManagement({ close }: { close: () => void }) {
+  const [items, setItems] = useState<ConfigServer[]>([]);
+  const [editing, setEditing] = useState<ConfigServer | null>(null);
+  const [editingExisting, setEditingExisting] = useState(false);
+  const [tracked, setTracked] = useState("");
+  const [compose, setCompose] = useState("{}");
+  const [homes, setHomes] = useState("{}");
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [reordering, setReordering] = useState(false);
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }), useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }));
+
+  useEffect(() => { getConfiguredServers().then(setItems).catch((reason: Error) => setError(reason.message)); }, []);
+  const begin = (item: ConfigServer, existing = true) => { setEditing({ ...item }); setEditingExisting(existing); setTracked(item.tracked_users.join(", ")); setCompose(JSON.stringify(item.owner_hints.compose_projects, null, 2)); setHomes(JSON.stringify(item.owner_hints.home_prefixes, null, 2)); setError(null); };
+  const save = async (event: FormEvent) => { event.preventDefault(); if (!editing) return; setSaving(true); setError(null); try { const payload = { ...editing, tracked_users: tracked.split(",").map((value) => value.trim()).filter(Boolean), owner_hints: { compose_projects: JSON.parse(compose), home_prefixes: JSON.parse(homes) } }; const next = editingExisting ? await updateConfiguredServer(payload) : await addConfiguredServer(payload); setItems(next); setEditing(null); } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not save server"); } finally { setSaving(false); } };
+  const toggle = async (item: ConfigServer) => { try { setItems(await setServerEnabled(item.id, !item.enabled)); } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not update server"); } };
+  const remove = async (item: ConfigServer) => { if (!window.confirm(`Delete ${item.display_name || item.id}?`)) return; try { setItems(await deleteConfiguredServer(item.id)); } catch (reason) { setError(reason instanceof Error ? reason.message : "Could not delete server"); } };
+  const reorder = async (serverId: string, targetId: string, position: "before" | "after") => {
+    if (reordering || serverId === targetId) return;
+    const previous = items;
+    const next = moveRelative(items, serverId, targetId, position);
+    if (next === items) return;
+    setItems(next); setReordering(true); setError(null);
+    try { setItems(await reorderConfiguredServer(serverId, targetId, position)); }
+    catch (reason) { setItems(previous); setError(reason instanceof Error ? reason.message : "Could not reorder servers"); }
+    finally { setReordering(false); }
+  };
+  const onDragEnd = ({ active, over }: DragEndEvent) => {
+    if (!over || active.id === over.id) return;
+    const sourceIndex = items.findIndex((item) => item.id === active.id);
+    const targetIndex = items.findIndex((item) => item.id === over.id);
+    if (sourceIndex < 0 || targetIndex < 0) return;
+    void reorder(String(active.id), String(over.id), sourceIndex < targetIndex ? "after" : "before");
+  };
+  const controlsDisabled = saving || reordering;
+  return <main className="management"><button className="back" onClick={close}>← Dashboard</button><header className="management-header"><div><p className="caption">SERVER CONFIGURATION</p><h1>Manage servers</h1></div><button className="manage-button" disabled={controlsDisabled} onClick={() => begin(blankConfig(), false)}>＋ Add server</button></header>{error && <p className="error">{error}</p>}<DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}><SortableContext items={items.map((item) => item.id)} strategy={verticalListSortingStrategy}><div className="server-list">{items.map((item, index) => <SortableServerRow key={item.id} item={item} index={index} items={items} disabled={controlsDisabled} onEdit={begin} onToggle={toggle} onRemove={remove} onMove={(serverId, targetId, position) => void reorder(serverId, targetId, position)} />)}</div></SortableContext></DndContext>{editing && <form className="server-form" onSubmit={save}><div className="form-header"><h2>{editingExisting ? "Edit server" : "Add server"}</h2><button type="button" className="row-action" onClick={() => setEditing(null)}>Cancel</button></div><label>ID<input required pattern="[A-Za-z0-9_-]+" disabled={editingExisting} value={editing.id} onChange={(event) => setEditing({ ...editing, id: event.target.value })} /></label><label>Display name<input value={editing.display_name ?? ""} onChange={(event) => setEditing({ ...editing, display_name: event.target.value })} /></label><label>SSH host<input required value={editing.ssh_host} onChange={(event) => setEditing({ ...editing, ssh_host: event.target.value })} /></label><div className="form-grid"><label>SSH user<input value={editing.ssh_user ?? ""} onChange={(event) => setEditing({ ...editing, ssh_user: event.target.value })} /></label><label>SSH port<input type="number" min="1" max="65535" required value={editing.ssh_port} onChange={(event) => setEditing({ ...editing, ssh_port: Number(event.target.value) })} /></label></div><label>Known hosts path<input required value={editing.ssh_known_hosts} onChange={(event) => setEditing({ ...editing, ssh_known_hosts: event.target.value })} /></label><label>Tracked users <small>(comma separated)</small><input value={tracked} onChange={(event) => setTracked(event.target.value)} /></label><div className="form-grid"><label>GPU collector<select value={editing.collectors.gpu} onChange={(event) => setEditing({ ...editing, collectors: { ...editing.collectors, gpu: event.target.value } })}><option>auto</option><option>off</option></select></label><label>Docker collector<select value={editing.collectors.docker} onChange={(event) => setEditing({ ...editing, collectors: { ...editing.collectors, docker: event.target.value } })}><option>auto</option><option>off</option></select></label></div><label>Compose project owners <textarea value={compose} onChange={(event) => setCompose(event.target.value)} /></label><label>Home prefix owners <textarea value={homes} onChange={(event) => setHomes(event.target.value)} /></label><button className="save-button" disabled={saving}>{saving ? "Saving…" : "Save server"}</button></form>}</main>;
+}
+
 export default function App() {
   const [servers, setServers] = useState<Server[]>([]);
   const [providers, setProviders] = useState<ProviderSnapshot[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
   const [management, setManagement] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [reordering, setReordering] = useState(false);
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }), useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }));
   useEffect(() => { getServers().then(setServers).catch((reason: Error) => setError(reason.message)); getProviders().then(setProviders).catch((reason: Error) => setError(reason.message)); return subscribe(setServers, setProviders); }, []);
+  const reorder = async (serverId: string, targetId: string, position: "before" | "after") => {
+    if (reordering || serverId === targetId) return;
+    const previous = servers;
+    const next = moveServerRelative(servers, serverId, targetId, position);
+    if (next === servers) return;
+    setServers(next); setReordering(true); setError(null);
+    try { await reorderConfiguredServer(serverId, targetId, position); }
+    catch (reason) { setServers(previous); setError(reason instanceof Error ? reason.message : "Could not reorder servers"); }
+    finally { setReordering(false); }
+  };
+  const onDragEnd = ({ active, over }: DragEndEvent) => {
+    if (!over || active.id === over.id) return;
+    const sourceIndex = servers.findIndex((server) => server.server_id === active.id);
+    const targetIndex = servers.findIndex((server) => server.server_id === over.id);
+    if (sourceIndex < 0 || targetIndex < 0) return;
+    void reorder(String(active.id), String(over.id), sourceIndex < targetIndex ? "after" : "before");
+  };
   const current = servers.find((server) => server.server_id === selected);
   if (management) return <ServerManagement close={() => setManagement(false)} />;
   if (current) return <Detail server={current} close={() => setSelected(null)} />;
-  return <main><header className="masthead"><div><p>LIVE RESOURCE MONITOR</p><h1>ResourceDeck</h1></div><div className="masthead-actions"><span>{servers.length} active servers</span><button className="manage-button" onClick={() => setManagement(true)}>⚙ Manage servers</button></div></header>{error && <p className="error">{error}</p>}<CodexUsage provider={providers.find((provider) => provider.provider_id === "codex")} /><div className="grid">{servers.map((server) => <Card key={server.server_id} server={server} onOpen={() => setSelected(server.server_id)} />)}</div>{servers.length === 0 && <div className="empty">No active server snapshots. Open <button className="link-button" onClick={() => setManagement(true)}>Manage servers</button> to enable one.</div>}</main>;
+  return <main><header className="masthead"><div><p>LIVE RESOURCE MONITOR</p><h1>ResourceDeck</h1></div><div className="masthead-actions"><span>{servers.length} active servers</span><button className="manage-button" onClick={() => setManagement(true)}>⚙ Manage servers</button></div></header>{error && <p className="error">{error}</p>}<CodexUsage provider={providers.find((provider) => provider.provider_id === "codex")} /><DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}><SortableContext items={servers.map((server) => server.server_id)} strategy={rectSortingStrategy}><div className="grid">{servers.map((server) => <SortableCard key={server.server_id} server={server} disabled={reordering} onOpen={() => setSelected(server.server_id)} />)}</div></SortableContext></DndContext>{servers.length === 0 && <div className="empty">No active server snapshots. Open <button className="link-button" onClick={() => setManagement(true)}>Manage servers</button> to enable one.</div>}</main>;
 }

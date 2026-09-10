@@ -150,7 +150,7 @@ ResourceDeck checks `config/servers.yaml` about once per second. Valid changes t
 
 Changing `app.bind` or `app.port` requires a service restart because the running server is already bound to its current address and port. `app.bind` must be `localhost` or a loopback IP address such as `127.0.0.1` or `::1`; external, wildcard, and LAN addresses are rejected.
 
-The dashboard's **Manage servers** page can add, edit, delete, and enable or disable servers from the local machine. It writes the same configuration file and never stores SSH credentials.
+The dashboard's **Manage servers** page can add, edit, delete, reorder, and enable or disable servers from the local machine. Drag a server by its handle (or use the up/down controls) to persist its card position in the same configuration file; the dashboard cards can be reordered with their drag handles too. It never stores SSH credentials.
 
 ## Optional: Codex usage and GPU attribution
 

@@ -2,7 +2,11 @@ import type { ConfigServer, ProviderSnapshot, Server } from "./types";
 
 async function jsonResponse<T>(response: Response, fallback: string): Promise<T> {
   const contentType = response.headers.get("content-type") ?? "";
-  if (!response.ok) throw new Error(fallback);
+  if (!response.ok) {
+    const payload = contentType.includes("application/json") ? await response.json().catch(() => null) : null;
+    const detail = payload && typeof payload === "object" && "detail" in payload ? payload.detail : null;
+    throw new Error(typeof detail === "string" ? detail : fallback);
+  }
   if (!contentType.includes("application/json")) throw new Error("Backend API is unavailable. Start ResourceDeck on port 8765.");
   return response.json();
 }
@@ -24,6 +28,7 @@ async function configRequest(url: string, method: string, body?: unknown): Promi
 export const addConfiguredServer = (server: ConfigServer) => configRequest("/api/v1/config/servers", "POST", server);
 export const updateConfiguredServer = (server: ConfigServer) => configRequest(`/api/v1/config/servers/${encodeURIComponent(server.id)}`, "PUT", server);
 export const setServerEnabled = (id: string, enabled: boolean) => configRequest(`/api/v1/config/servers/${encodeURIComponent(id)}/enabled?enabled=${enabled}`, "PATCH");
+export const reorderConfiguredServer = (serverId: string, targetId: string, position: "before" | "after") => configRequest("/api/v1/config/servers/order", "PATCH", { server_id: serverId, target_id: targetId, position });
 export const deleteConfiguredServer = (id: string) => configRequest(`/api/v1/config/servers/${encodeURIComponent(id)}`, "DELETE");
 
 export function subscribe(onData: (servers: Server[]) => void, onProviders?: (providers: ProviderSnapshot[]) => void): () => void {

@@ -7,11 +7,12 @@ import os
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import AsyncIterator
+from typing import AsyncIterator, Literal
 from urllib.parse import urlsplit
 
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
+from pydantic import BaseModel
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.types import ASGIApp, Receive, Scope, Send
@@ -24,6 +25,12 @@ from .state import SnapshotStore
 
 
 FRONTEND_DIR = Path(__file__).parents[3] / "frontend" / "dist"
+
+
+class ServerMove(BaseModel):
+    server_id: str
+    target_id: str
+    position: Literal["before", "after"]
 
 
 def is_loopback_host(host: str | None) -> bool:
@@ -158,7 +165,7 @@ def create_app(settings: Settings | None = None, *, config_path: str | Path | No
         settings = load_settings(config_path)
     elif config_path is not None:
         config_path = Path(config_path)
-    store = SnapshotStore()
+    store = SnapshotStore([server.id for server in settings.servers])
     orchestrator = PollingOrchestrator(settings.servers, settings.polling, store, settings.providers.codex)
     watcher = ConfigWatcher(config_path, settings, orchestrator) if config_path else None
     config_store = ConfigStore(config_path) if config_path else None
@@ -240,6 +247,24 @@ def create_app(settings: Settings | None = None, *, config_path: str | Path | No
         if any(item.id == server.id for item in existing):
             raise HTTPException(409, "Server ID already exists")
         return await save_servers(request, existing + [server])
+
+    @app.patch("/api/v1/config/servers/order")
+    async def reorder_servers(request: Request, move: ServerMove):
+        require_local_management(request)
+        if not watcher:
+            raise HTTPException(503, "Configuration management is unavailable")
+        if move.server_id == move.target_id:
+            raise HTTPException(400, "A server cannot be moved relative to itself")
+        existing = list(watcher.settings.servers)
+        ids = {server.id for server in existing}
+        if move.server_id not in ids or move.target_id not in ids:
+            raise HTTPException(404, "Unknown configured server")
+        moving = next(server for server in existing if server.id == move.server_id)
+        remaining = [server for server in existing if server.id != move.server_id]
+        target_index = next(index for index, server in enumerate(remaining) if server.id == move.target_id)
+        insert_at = target_index + (1 if move.position == "after" else 0)
+        remaining.insert(insert_at, moving)
+        return await save_servers(request, remaining)
 
     @app.put("/api/v1/config/servers/{server_id}")
     async def update_server(server_id: str, request: Request, server: ServerSettings):

@@ -248,6 +248,7 @@ class PollingOrchestrator:
                 poller = ServerPoller(desired[server_id], polling, self.store)
                 self.pollers[server_id] = poller
                 self._start_poller(server_id, poller)
+            await self.store.set_server_order([server.id for server in servers])
             candidate_codex = codex or CodexProviderSettings()
             if candidate_codex != self.codex_settings:
                 await self._stop_codex_poller()

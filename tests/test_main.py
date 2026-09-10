@@ -4,9 +4,11 @@ from pathlib import Path
 
 import httpx
 import pytest
+import yaml
 
 from resourcedeck.config import Settings, load_settings
 from resourcedeck.main import create_app
+from resourcedeck.models import ServerSnapshot
 
 
 async def request(app, method: str, path: str, *, headers=None, client=("127.0.0.1", 50000), json=None):
@@ -72,3 +74,46 @@ async def test_config_management_requires_local_peer_and_origin(tmp_path: Path):
         json={"id": "two", "ssh_host": "two.example"},
     )
     assert blocked_write.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_reordering_servers_persists_configuration_and_snapshot_order(tmp_path: Path):
+    path = tmp_path / "servers.yaml"
+    path.write_text(
+        "servers:\n  - id: alpha\n    ssh_host: alpha.example\n  - id: beta\n    ssh_host: beta.example\n  - id: gamma\n    ssh_host: gamma.example\n",
+        encoding="utf-8",
+    )
+    app = create_app(load_settings(path), config_path=path)
+    watcher = app.state.config_watcher
+    original_pollers = dict(watcher.orchestrator.pollers)
+    for server_id in ("gamma", "alpha", "beta"):
+        await app.state.store.publish(ServerSnapshot(server_id=server_id, display_name=server_id))
+
+    response = await request(
+        app,
+        "PATCH",
+        "/api/v1/config/servers/order",
+        json={"server_id": "gamma", "target_id": "alpha", "position": "before"},
+    )
+
+    assert response.status_code == 200
+    assert [server["id"] for server in response.json()] == ["gamma", "alpha", "beta"]
+    assert [server["id"] for server in yaml.safe_load(path.read_text(encoding="utf-8"))["servers"]] == ["gamma", "alpha", "beta"]
+    snapshots = await request(app, "GET", "/api/v1/servers")
+    assert [server["server_id"] for server in snapshots.json()] == ["gamma", "alpha", "beta"]
+    assert watcher.orchestrator.pollers == original_pollers
+
+
+@pytest.mark.asyncio
+async def test_reordering_servers_validates_ids_and_origin(tmp_path: Path):
+    path = tmp_path / "servers.yaml"
+    path.write_text("servers:\n  - id: alpha\n    ssh_host: alpha.example\n  - id: beta\n    ssh_host: beta.example\n", encoding="utf-8")
+    app = create_app(load_settings(path), config_path=path)
+
+    invalid = await request(app, "PATCH", "/api/v1/config/servers/order", json={"server_id": "alpha", "target_id": "alpha", "position": "before"})
+    missing = await request(app, "PATCH", "/api/v1/config/servers/order", json={"server_id": "missing", "target_id": "alpha", "position": "before"})
+    remote = await request(app, "PATCH", "/api/v1/config/servers/order", client=("192.0.2.1", 50000), json={"server_id": "beta", "target_id": "alpha", "position": "before"})
+
+    assert invalid.status_code == 400
+    assert missing.status_code == 404
+    assert remote.status_code == 403

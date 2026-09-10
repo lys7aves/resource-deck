@@ -1,14 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import App from "./App";
-import type { Server } from "./types";
+import type { ConfigServer, Server } from "./types";
 
-const api = vi.hoisted(() => ({ getServers: vi.fn(), getProviders: vi.fn(), getConfiguredServers: vi.fn(), addConfiguredServer: vi.fn(), updateConfiguredServer: vi.fn(), subscribe: vi.fn() }));
+const api = vi.hoisted(() => ({ getServers: vi.fn(), getProviders: vi.fn(), getConfiguredServers: vi.fn(), addConfiguredServer: vi.fn(), updateConfiguredServer: vi.fn(), reorderConfiguredServer: vi.fn(), subscribe: vi.fn() }));
 const getServers = api.getServers as ReturnType<typeof vi.fn>;
 const getProviders = api.getProviders as ReturnType<typeof vi.fn>;
 const getConfiguredServers = api.getConfiguredServers as ReturnType<typeof vi.fn>;
 const addConfiguredServer = api.addConfiguredServer as ReturnType<typeof vi.fn>;
 const updateConfiguredServer = api.updateConfiguredServer as ReturnType<typeof vi.fn>;
+const reorderConfiguredServer = api.reorderConfiguredServer as ReturnType<typeof vi.fn>;
 const subscribe = api.subscribe as ReturnType<typeof vi.fn>;
 
 vi.mock("./api", () => api);
@@ -42,6 +43,11 @@ const server: Server = {
   ]),
 };
 
+const configuredServers: ConfigServer[] = [
+  { id: "oracle", enabled: true, display_name: "Oracle", ssh_host: "oracle.example", ssh_port: 22, ssh_known_hosts: "~/.ssh/known_hosts", tracked_users: [], collectors: { gpu: "auto", docker: "auto" }, owner_hints: { compose_projects: {}, home_prefixes: {} } },
+  { id: "gpu", enabled: false, display_name: "GPU", ssh_host: "gpu.example", ssh_port: 22, ssh_known_hosts: "~/.ssh/known_hosts", tracked_users: [], collectors: { gpu: "auto", docker: "auto" }, owner_hints: { compose_projects: {}, home_prefixes: {} } },
+];
+
 describe("ResourceDeck UI", () => {
   beforeEach(() => { getProviders.mockResolvedValue([]); getConfiguredServers.mockResolvedValue([]); });
   it("adds a new server with POST after its ID is entered", async () => {
@@ -58,6 +64,21 @@ describe("ResourceDeck UI", () => {
 
     await waitFor(() => expect(addConfiguredServer).toHaveBeenCalledWith(expect.objectContaining({ id: "WS002", ssh_host: "192.168.2.13" })));
     expect(updateConfiguredServer).not.toHaveBeenCalled();
+  });
+
+  it("moves servers from the management list and saves their order immediately", async () => {
+    getServers.mockResolvedValue([]);
+    getConfiguredServers.mockResolvedValue(configuredServers);
+    reorderConfiguredServer.mockResolvedValue([configuredServers[1], configuredServers[0]]);
+    subscribe.mockReturnValue(() => undefined);
+    render(<App />);
+
+    fireEvent.click((await screen.findAllByRole("button", { name: /Manage servers/ }))[0]);
+    await screen.findByText("Oracle");
+    fireEvent.click(screen.getByRole("button", { name: "Oracle 아래로 이동" }));
+
+    await waitFor(() => expect(reorderConfiguredServer).toHaveBeenCalledWith("oracle", "gpu", "after"));
+    expect(screen.getAllByRole("button", { name: "서버 순서 변경" })).toHaveLength(2);
   });
 
   it("defaults to tracked users and reveals all users on demand", async () => {
