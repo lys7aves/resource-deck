@@ -21,4 +21,7 @@
 .usage-error { color:#f1bf65; margin:14px 0 0; }
 .codex-usage.unavailable { border-color:#6b4c4b; }
 .codex-usage.stale { border-color:#675a3c; }
+.reset-credit-badge { display:grid; gap:2px; color:#91a5a8; font-size:12px; text-align:right; }
+.reset-credit-badge strong { color:#59d99d; font-size:16px; }
+.reset-credit-badge small { color:#9bded7; }
 @container (max-width:480px) { .usage-windows { grid-template-columns:1fr; gap:10px; } }

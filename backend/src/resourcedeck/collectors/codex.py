@@ -37,6 +37,21 @@ def _window(kind: str, value: Any) -> dict[str, Any] | None:
     return {"kind": kind, "used_percent": used_percent, "remaining_percent": 100 - used_percent, "window_duration_minutes": int(duration), "resets_at": int(resets_at)}
 
 
+def _reset_credits(value: Any) -> list[dict[str, int | None]] | None:
+    """앱 서버가 제공한 reset credit 만료 정보를 화면 표시용으로 보존한다."""
+    if value is None:
+        return None
+    if not isinstance(value, list):
+        return None
+    credits: list[dict[str, int | None]] = []
+    for credit in value:
+        if not isinstance(credit, Mapping):
+            continue
+        expires_at = credit.get("expiresAt")
+        credits.append({"expires_at": int(expires_at) if isinstance(expires_at, (int, float)) and not isinstance(expires_at, bool) else None})
+    return credits
+
+
 def parse_rate_limits_response(result: Mapping[str, Any]) -> dict[str, Any]:
     raw_buckets = result.get("rateLimitsByLimitId")
     if not isinstance(raw_buckets, Mapping):
@@ -63,7 +78,8 @@ def parse_rate_limits_response(result: Mapping[str, Any]) -> dict[str, Any]:
     buckets.sort(key=lambda item: (item["id"] != "codex", item["id"]))
     resets = result.get("rateLimitResetCredits")
     available_resets = resets.get("availableCount") if isinstance(resets, Mapping) else None
-    return {"plan_type": next((item["plan_type"] for item in buckets if item["plan_type"]), None), "buckets": buckets, "reset_credits_available": available_resets if isinstance(available_resets, int) else None}
+    reset_credits = _reset_credits(resets.get("credits")) if isinstance(resets, Mapping) else None
+    return {"plan_type": next((item["plan_type"] for item in buckets if item["plan_type"]), None), "buckets": buckets, "reset_credits_available": available_resets if isinstance(available_resets, int) and not isinstance(available_resets, bool) else None, "reset_credits": reset_credits}
 
 
 def merge_rate_limit_update(data: Mapping[str, Any], update: Mapping[str, Any]) -> dict[str, Any]:

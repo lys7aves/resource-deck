@@ -26,6 +26,29 @@ def test_rate_limit_parser_normalizes_windows_and_additional_buckets():
     assert parsed["buckets"][0]["windows"][0]["remaining_percent"] == 53
     assert parsed["buckets"][0]["credits"]["balance"] == "12"
     assert parsed["reset_credits_available"] == 2
+    assert parsed["reset_credits"] == []
+
+
+def test_rate_limit_parser_keeps_reset_credit_expirations_when_available():
+    result = response()
+    result["rateLimitResetCredits"]["credits"] = [
+        {"expiresAt": 1_800_000_000},
+        {"expiresAt": None},
+        {"expiresAt": 1_700_000_000.9},
+    ]
+
+    assert parse_rate_limits_response(result)["reset_credits"] == [
+        {"expires_at": 1_800_000_000},
+        {"expires_at": None},
+        {"expires_at": 1_700_000_000},
+    ]
+
+
+def test_rate_limit_parser_distinguishes_missing_reset_credit_details():
+    result = response()
+    result["rateLimitResetCredits"]["credits"] = None
+
+    assert parse_rate_limits_response(result)["reset_credits"] is None
 
 
 def test_rate_limit_parser_supports_single_bucket_and_rejects_malformed_data():

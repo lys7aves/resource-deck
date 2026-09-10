@@ -80,6 +80,15 @@ function UsageBucket({ bucket, now }: { bucket: CodexUsageBucket; now: number })
   return <div className="usage-bucket"><h3>{bucket.name ?? bucket.id}</h3><div className="usage-windows">{bucket.windows.map((window) => <UsageWindow key={window.kind} window={window} now={now} />)}</div>{bucket.credits && <small>Credits: {bucket.credits.unlimited ? "unlimited" : bucket.credits.balance}</small>}</div>;
 }
 
+function ResetCredits({ count, credits, now }: { count: number; credits?: { expires_at: number | null }[] | null; now: number }) {
+  const creditLabel = `reset credit${count === 1 ? "" : "s"}`;
+  const label = `${count} ${creditLabel} available`;
+  if (count < 1) return <small>{label}</small>;
+  const expirations = credits?.map((credit) => credit.expires_at).filter((expiresAt): expiresAt is number => Number.isFinite(expiresAt)) ?? [];
+  const earliestExpiration = expirations.length > 0 ? Math.min(...expirations) : null;
+  return <span className="reset-credit-badge"><span><strong>{count}</strong> {creditLabel} available</span>{earliestExpiration !== null && <small>Earliest known expiry {resetLabel(earliestExpiration, now, true)}</small>}</span>;
+}
+
 function CodexUsage({ provider }: { provider?: ProviderSnapshot }) {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
@@ -89,7 +98,7 @@ function CodexUsage({ provider }: { provider?: ProviderSnapshot }) {
   if (!provider) return null;
   const codex = provider.data.buckets?.find((bucket) => bucket.id === "codex");
   const otherBuckets = provider.data.buckets?.filter((bucket) => bucket.id !== "codex") ?? [];
-  return <section className={`codex-usage ${provider.status}`}><header><div><p>LOCAL CODEX ACCOUNT</p><h2>Codex usage {provider.data.plan_type ? `· ${provider.data.plan_type}` : ""}</h2></div><span className={`status ${provider.status}`}>{provider.status}</span></header>{provider.status !== "ok" && <p className="usage-error">{provider.short_message ?? "Usage data is unavailable"}</p>}{codex && <UsageBucket bucket={codex} now={now} />}{otherBuckets.length > 0 && <details><summary>Additional limits ({otherBuckets.length})</summary>{otherBuckets.map((bucket) => <UsageBucket key={bucket.id} bucket={bucket} now={now} />)}</details>}<footer><small>Updated {new Date(provider.observed_at).toLocaleString()}</small>{provider.data.reset_credits_available !== null && provider.data.reset_credits_available !== undefined && <small>{provider.data.reset_credits_available} reset credits available</small>}</footer></section>;
+  return <section className={`codex-usage ${provider.status}`}><header><div><p>LOCAL CODEX ACCOUNT</p><h2>Codex usage {provider.data.plan_type ? `· ${provider.data.plan_type}` : ""}</h2></div><span className={`status ${provider.status}`}>{provider.status}</span></header>{provider.status !== "ok" && <p className="usage-error">{provider.short_message ?? "Usage data is unavailable"}</p>}{codex && <UsageBucket bucket={codex} now={now} />}{otherBuckets.length > 0 && <details><summary>Additional limits ({otherBuckets.length})</summary>{otherBuckets.map((bucket) => <UsageBucket key={bucket.id} bucket={bucket} now={now} />)}</details>}<footer><small>Updated {new Date(provider.observed_at).toLocaleString()}</small>{provider.data.reset_credits_available !== null && provider.data.reset_credits_available !== undefined && <ResetCredits count={provider.data.reset_credits_available} credits={provider.data.reset_credits} now={now} />}</footer></section>;
 }
 
 function Card({ server, onOpen }: { server: Server; onOpen: () => void }) {

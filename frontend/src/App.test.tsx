@@ -156,6 +156,54 @@ describe("ResourceDeck UI", () => {
     expect(screen.getByText("Reserve")).toBeTruthy();
   });
 
+  it("highlights available reset credits and shows the earliest known expiry", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T01:00:00Z"));
+    getServers.mockResolvedValue([]);
+    getProviders.mockResolvedValue([{ provider_id: "codex", status: "ok", observed_at: "2026-01-01T01:00:00Z", data: {
+      reset_credits_available: 2,
+      reset_credits: [
+        { expires_at: Date.parse("2026-01-02T01:00:00Z") / 1000 },
+        { expires_at: Date.parse("2026-01-01T01:50:00Z") / 1000 },
+      ],
+      buckets: [{ id: "codex", windows: [{ kind: "primary", used_percent: 40, remaining_percent: 60, window_duration_minutes: 100, resets_at: Date.parse("2026-01-01T01:50:00Z") / 1000 }] }],
+    } }]);
+    subscribe.mockReturnValue(() => undefined);
+    render(<App />);
+    await act(async () => { await Promise.resolve(); });
+
+    const label = screen.getByText("2");
+    expect(label.closest(".reset-credit-badge")).toBeTruthy();
+    expect(screen.getByText(/Earliest known expiry .*0h 50m left/)).toBeTruthy();
+    act(() => vi.advanceTimersByTime(60_000));
+    expect(screen.getByText(/Earliest known expiry .*0h 49m left/)).toBeTruthy();
+  });
+
+  it("keeps zero reset credits subdued", async () => {
+    getServers.mockResolvedValue([]);
+    getProviders.mockResolvedValue([{ provider_id: "codex", status: "ok", observed_at: "2026-01-01T01:00:00Z", data: {
+      reset_credits_available: 0,
+      buckets: [{ id: "codex", windows: [{ kind: "primary", used_percent: 40, remaining_percent: 60, window_duration_minutes: 100, resets_at: Date.parse("2026-01-01T01:50:00Z") / 1000 }] }],
+    } }]);
+    subscribe.mockReturnValue(() => undefined);
+    render(<App />);
+    expect(await screen.findByText("0 reset credits available")).toBeTruthy();
+    expect(screen.getByText("0 reset credits available").closest(".reset-credit-badge")).toBeNull();
+  });
+
+  it("falls back to a count-only badge without reset-credit details", async () => {
+    getServers.mockResolvedValue([]);
+    getProviders.mockResolvedValue([{ provider_id: "codex", status: "ok", observed_at: "2026-01-01T01:00:00Z", data: {
+      reset_credits_available: 1,
+      reset_credits: null,
+      buckets: [{ id: "codex", windows: [{ kind: "primary", used_percent: 40, remaining_percent: 60, window_duration_minutes: 100, resets_at: Date.parse("2026-01-01T01:50:00Z") / 1000 }] }],
+    } }]);
+    subscribe.mockReturnValue(() => undefined);
+    render(<App />);
+    expect((await screen.findByText("1")).closest(".reset-credit-badge")).toBeTruthy();
+    expect(screen.queryByText(/Earliest known expiry/)).toBeNull();
+  });
+
   it("marks the linear usage guide and reports pace for every Codex limit", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-01-01T01:00:00Z"));
