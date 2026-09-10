@@ -3,9 +3,12 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import App from "./App";
 import type { Server } from "./types";
 
-const api = vi.hoisted(() => ({ getServers: vi.fn(), getProviders: vi.fn(), subscribe: vi.fn() }));
+const api = vi.hoisted(() => ({ getServers: vi.fn(), getProviders: vi.fn(), getConfiguredServers: vi.fn(), addConfiguredServer: vi.fn(), updateConfiguredServer: vi.fn(), subscribe: vi.fn() }));
 const getServers = api.getServers as ReturnType<typeof vi.fn>;
 const getProviders = api.getProviders as ReturnType<typeof vi.fn>;
+const getConfiguredServers = api.getConfiguredServers as ReturnType<typeof vi.fn>;
+const addConfiguredServer = api.addConfiguredServer as ReturnType<typeof vi.fn>;
+const updateConfiguredServer = api.updateConfiguredServer as ReturnType<typeof vi.fn>;
 const subscribe = api.subscribe as ReturnType<typeof vi.fn>;
 
 vi.mock("./api", () => api);
@@ -40,7 +43,23 @@ const server: Server = {
 };
 
 describe("ResourceDeck UI", () => {
-  beforeEach(() => getProviders.mockResolvedValue([]));
+  beforeEach(() => { getProviders.mockResolvedValue([]); getConfiguredServers.mockResolvedValue([]); });
+  it("adds a new server with POST after its ID is entered", async () => {
+    getServers.mockResolvedValue([]);
+    subscribe.mockReturnValue(() => undefined);
+    addConfiguredServer.mockResolvedValue([]);
+    render(<App />);
+
+    fireEvent.click((await screen.findAllByRole("button", { name: /Manage servers/ }))[0]);
+    fireEvent.click(screen.getByRole("button", { name: /Add server/ }));
+    fireEvent.change(screen.getByLabelText("ID"), { target: { value: "WS002" } });
+    fireEvent.change(screen.getByLabelText("SSH host"), { target: { value: "192.168.2.13" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save server" }));
+
+    await waitFor(() => expect(addConfiguredServer).toHaveBeenCalledWith(expect.objectContaining({ id: "WS002", ssh_host: "192.168.2.13" })));
+    expect(updateConfiguredServer).not.toHaveBeenCalled();
+  });
+
   it("defaults to tracked users and reveals all users on demand", async () => {
     getServers.mockResolvedValue([server]);
     subscribe.mockReturnValue(() => undefined);
