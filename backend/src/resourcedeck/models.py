@@ -73,6 +73,7 @@ class UserMetrics(BaseModel):
     estimated_cpu_cores: float = 0
     memory_rss_bytes: int = 0
     tracked: bool = False
+    is_system: bool = False
 
 
 class OwnerAttribution(BaseModel):
@@ -98,6 +99,18 @@ class ContainerMetrics(BaseModel):
     gpu_process_count: int = 0
 
 
+class ContainerEvent(BaseModel):
+    occurred_at: datetime
+    time_nano: int | None = None
+    action: str
+    container_id: str
+    name: str | None = None
+    image: str | None = None
+    owner: str | None = None
+    owner_source: str | None = None
+    exit_code: int | None = None
+
+
 class Capabilities(BaseModel):
     system: MetricStatus = MetricStatus.UNAVAILABLE
     gpu: MetricStatus = MetricStatus.UNAVAILABLE
@@ -112,7 +125,7 @@ class Diagnostics(BaseModel):
 
 
 class ServerSnapshot(BaseModel):
-    schema_version: int = 2
+    schema_version: int = 3
     server_id: str
     display_name: str
     tracked_users_configured: bool = False
@@ -125,6 +138,7 @@ class ServerSnapshot(BaseModel):
     gpu_processes: MetricEnvelope[list[GpuProcess]] = Field(default_factory=lambda: MetricEnvelope(status=MetricStatus.UNAVAILABLE))
     users: MetricEnvelope[list[UserMetrics]] = Field(default_factory=lambda: MetricEnvelope(status=MetricStatus.UNAVAILABLE))
     containers: MetricEnvelope[list[ContainerMetrics]] = Field(default_factory=lambda: MetricEnvelope(status=MetricStatus.UNAVAILABLE))
+    container_events: MetricEnvelope[list[ContainerEvent]] = Field(default_factory=lambda: MetricEnvelope(status=MetricStatus.UNAVAILABLE))
     diagnostics: Diagnostics = Field(default_factory=Diagnostics)
 
 

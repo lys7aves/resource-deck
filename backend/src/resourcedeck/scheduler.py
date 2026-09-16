@@ -2,14 +2,15 @@ from __future__ import annotations
 
 import asyncio
 import random
+from datetime import timedelta
 
-from .collectors.docker import (DOCKER_INVENTORY_COMMAND, DOCKER_STATS_COMMAND, build_docker_top_command, build_process_evidence_command, parse_container_ids, parse_containers, parse_docker_top, parse_process_evidence)
+from .collectors.docker import (DOCKER_INVENTORY_COMMAND, DOCKER_STATS_COMMAND, build_docker_events_command, build_docker_top_command, build_process_evidence_command, parse_container_ids, parse_containers, parse_docker_events, parse_docker_top, parse_process_evidence)
 from .collectors.codex import CodexAppServerClient, CodexCollectorError, merge_rate_limit_update
 from .collectors.linux import SYSTEM_COMMAND, USERS_COMMAND, CpuCounters, parse_system_output
 from .collectors.nvidia import GPU_COMMAND, GPU_PROCESS_COMMAND, parse_gpu_processes, parse_gpus
 from .collectors.users import parse_users
 from .config import CodexProviderSettings, PollingSettings, ServerSettings
-from .models import Capabilities, ConnectionStatus, MetricEnvelope, MetricStatus, ProviderSnapshot, ServerSnapshot, utcnow
+from .models import Capabilities, ConnectionStatus, ContainerEvent, ContainerMetrics, MetricEnvelope, MetricStatus, ProviderSnapshot, ServerSnapshot, utcnow
 from .ssh import RemoteExecutor
 from .state import SnapshotStore
 
@@ -21,6 +22,17 @@ class ServerPoller:
         self.previous_cpu: CpuCounters | None = None
         self.snapshot = ServerSnapshot(server_id=server.id, display_name=server.display_name or server.id, tracked_users_configured=bool(server.tracked_users))
         self._last: dict[str, float] = {}
+        self._docker_events_since: int | None = None
+        self._container_metadata: dict[str, ContainerMetrics] = {}
+
+    def retain_container_events(self, new_events: list[ContainerEvent]) -> list[ContainerEvent]:
+        """Keep a bounded, in-memory working history rather than an audit log."""
+        cutoff = utcnow() - timedelta(hours=24)
+        unique: dict[tuple[int | datetime, str, str], ContainerEvent] = {}
+        for event in [*(self.snapshot.container_events.value or []), *new_events]:
+            if event.occurred_at >= cutoff:
+                unique[(event.time_nano if event.time_nano is not None else event.occurred_at, event.container_id, event.action)] = event
+        return sorted(unique.values(), key=lambda item: item.occurred_at, reverse=True)[:10_000]
 
     async def run(self) -> None:
         await asyncio.sleep(random.uniform(0, 0.2 * self.polling.system_seconds))
@@ -57,6 +69,7 @@ class ServerPoller:
         if self.due("docker", self.polling.docker_seconds) and self.server.collectors.docker != "off":
             jobs["docker_inventory"] = asyncio.create_task(self.executor.run(DOCKER_INVENTORY_COMMAND))
             jobs["docker_stats"] = asyncio.create_task(self.executor.run(DOCKER_STATS_COMMAND))
+            jobs["docker_events"] = asyncio.create_task(self.executor.run(build_docker_events_command(self._docker_events_since)))
         results = {name: result for name, result in zip(jobs, await asyncio.gather(*jobs.values(), return_exceptions=True))}
         errors: dict[str, str] = {}
         system = results["system"]
@@ -110,9 +123,20 @@ class ServerPoller:
                 except Exception as error:
                     errors["docker_top"] = type(error).__name__
             self.snapshot.containers = MetricEnvelope(status=MetricStatus.OK, value=parse_containers(results["docker_inventory"].stdout, results["docker_stats"].stdout, self.server.owner_hints, gpu_processes, evidence, top), measurement_method="docker_cli")
+            self._container_metadata.update({container.id: container for container in self.snapshot.containers.value})
             self.snapshot.capabilities.docker = MetricStatus.OK
         elif "docker_inventory" in errors or "docker_stats" in errors:
             self.snapshot.containers.status = MetricStatus.UNAVAILABLE if self.snapshot.containers.value is None else MetricStatus.STALE
+        if "docker_events" in results and "docker_events" not in errors:
+            until, events = parse_docker_events(results["docker_events"].stdout, self.server.owner_hints, self._container_metadata)
+            if until is None:
+                errors["docker_events"] = "invalid_response"
+                self.snapshot.container_events.status = MetricStatus.UNAVAILABLE if self.snapshot.container_events.value is None else MetricStatus.STALE
+            else:
+                self._docker_events_since = until
+                self.snapshot.container_events = MetricEnvelope(status=MetricStatus.OK, value=self.retain_container_events(events), measurement_method="docker_events_interval")
+        elif "docker_events" in errors:
+            self.snapshot.container_events.status = MetricStatus.UNAVAILABLE if self.snapshot.container_events.value is None else MetricStatus.STALE
         self.snapshot.diagnostics.collector_errors = errors
         if errors:
             self.snapshot.connection = ConnectionStatus.DEGRADED

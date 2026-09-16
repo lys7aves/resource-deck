@@ -37,6 +37,7 @@ const server: Server = {
     { username: "daemon", estimated_cpu_cores: 1, memory_rss_bytes: 2048, tracked: false },
   ]),
   containers: envelope([{ id: "abcdef1234567890", name: "trainer", cpu_percent: 12.5, gpu_memory_mib: 400, gpu_process_count: 1, owner: { owner: "yuseop", source: "label", confidence: "high" } }]),
+  container_events: envelope([]),
   gpu_processes: envelope([
     { gpu_uuid: "GPU-a", pid: 123, process_name: "python", memory_used_mib: 400, container_id: "abcdef123456", container_mapping_source: "proc_cgroup", container_mapping_confidence: "high" },
     { gpu_uuid: "GPU-a", pid: 321, process_name: "other", memory_used_mib: 10, container_mapping_source: "unmapped", container_mapping_confidence: "none" },
@@ -94,6 +95,28 @@ describe("ResourceDeck UI", () => {
     expect(screen.getByText("daemon")).toBeTruthy();
   });
 
+  it("keeps system accounts collapsed in the users card", async () => {
+    getServers.mockResolvedValue([{
+      ...server,
+      tracked_users_configured: false,
+      users: envelope([
+        { username: "ys.lee", estimated_cpu_cores: 1, memory_rss_bytes: 1024, tracked: false, is_system: false },
+        { username: "systemd-timesync", estimated_cpu_cores: 0, memory_rss_bytes: 2048, tracked: false, is_system: true },
+      ]),
+    }]);
+    subscribe.mockReturnValue(() => undefined);
+    render(<App />);
+
+    await screen.findByText("Oracle");
+    fireEvent.click(screen.getByRole("button", { name: /Oracle/ }));
+    expect(screen.getByText("ys.lee")).toBeTruthy();
+    const systemAccounts = screen.getByText("System accounts (1)").closest("details");
+    expect(systemAccounts?.open).toBe(false);
+    fireEvent.click(screen.getByText("System accounts (1)"));
+    expect(systemAccounts?.open).toBe(true);
+    expect(screen.getByText("systemd-timesync")).toBeTruthy();
+  });
+
   it("shows container owner and GPU mapping evidence including unmapped fallback", async () => {
     getServers.mockResolvedValue([server]);
     subscribe.mockReturnValue(() => undefined);
@@ -101,10 +124,36 @@ describe("ResourceDeck UI", () => {
 
     await screen.findByText("Oracle");
     fireEvent.click(screen.getByRole("button", { name: /Oracle/ }));
-    expect(screen.getByText("trainer · yuseop")).toBeTruthy();
+    expect(screen.getByText(/unknown image · yuseop/)).toBeTruthy();
     expect(screen.getByText("cgroup match · high confidence")).toBeTruthy();
     expect(screen.getByText("Not mapped to a container")).toBeTruthy();
     expect(screen.getByText("no container evidence")).toBeTruthy();
+  });
+
+  it("separates running containers from recent lifecycle activity", async () => {
+    getServers.mockResolvedValue([{
+      ...server,
+      containers: envelope([{ ...server.containers.value![0], image: "repo/train:latest", memory_used_bytes: 1536 * 1024 ** 2, memory_limit_bytes: 4 * 1024 ** 3 }]),
+      container_events: envelope([{ occurred_at: "2026-09-02T00:00:00Z", action: "destroy", container_id: "deadbeef123456", name: "brief-job", image: "repo/job:latest", owner: "alice", owner_source: "label", exit_code: 12 }]),
+    }]);
+    subscribe.mockReturnValue(() => undefined);
+    render(<App />);
+
+    await screen.findByText("Oracle");
+    fireEvent.click(screen.getByRole("button", { name: /Oracle/ }));
+    expect(screen.getByText("Running containers")).toBeTruthy();
+    expect(screen.getByText("Recent container activity")).toBeTruthy();
+    expect(screen.getByText("destroy")).toBeTruthy();
+    expect(screen.getByText(/brief-job · repo\/job:latest · alice · exit 12/)).toBeTruthy();
+  });
+
+  it("shows recent Docker activity on the server card", async () => {
+    getServers.mockResolvedValue([{ ...server, containers: envelope([]), container_events: envelope([{ occurred_at: "2026-09-02T00:00:00Z", action: "destroy", container_id: "deadbeef" }]) }]);
+    subscribe.mockReturnValue(() => undefined);
+    render(<App />);
+
+    expect(await screen.findByText("0 running")).toBeTruthy();
+    expect(screen.getByText("1 recent events")).toBeTruthy();
   });
 
   it("shows a VRAM allocation bar while preserving exact GPU memory values", async () => {
@@ -115,7 +164,7 @@ describe("ResourceDeck UI", () => {
     subscribe.mockReturnValue(() => undefined);
     render(<App />);
 
-    const bar = await screen.findByRole("progressbar", { name: "GPU0 VRAM allocation: 13.6 GB used; 400 MB mine" });
+    const bar = await screen.findByRole("progressbar", { name: "GPU0 VRAM allocation: 13.6 GB used; 400 MB for tracked users" });
     expect(bar.querySelector(".bar-mine")?.getAttribute("style")).toContain("width: 1.");
     expect(bar.querySelector(".bar-other")?.getAttribute("style")).toContain("width: 55.");
     expect(screen.queryByText("57%")).toBeNull();
@@ -129,7 +178,7 @@ describe("ResourceDeck UI", () => {
     subscribe.mockReturnValue(() => undefined);
     render(<App />);
 
-    const bar = await screen.findByRole("progressbar", { name: "GPU0 VRAM allocation: 1.0 GB used; 0 MB mine" });
+    const bar = await screen.findByRole("progressbar", { name: "GPU0 VRAM allocation: 1.0 GB used; 0 MB for tracked users" });
     expect(bar.querySelector(".bar-mine")?.getAttribute("style")).toContain("width: 0%");
   });
 
@@ -146,13 +195,13 @@ describe("ResourceDeck UI", () => {
     render(<App />);
 
     await screen.findByText("Oracle");
-    const cpu = screen.getByRole("progressbar", { name: "CPU usage: 50% used; 2.0 cores mine" });
+    const cpu = screen.getByRole("progressbar", { name: "CPU usage: 50% used; 2.0 core equivalent estimate for tracked users" });
     expect(cpu.querySelector(".bar-mine")?.getAttribute("style")).toContain("width: 25%");
     expect(cpu.querySelector(".bar-other")?.getAttribute("style")).toContain("width: 25%");
-    const ram = screen.getByRole("progressbar", { name: "RAM usage: 50% used; 1 KB RSS estimate mine" });
+    const ram = screen.getByRole("progressbar", { name: "RAM usage: 50% used; 1 KB RSS estimate for tracked users" });
     expect(ram.querySelector(".bar-mine")?.getAttribute("style")).toContain("width: 50%");
     expect(ram.querySelector(".bar-other")?.getAttribute("style")).toContain("width: 0%");
-    const gpu = screen.getByRole("progressbar", { name: "GPU0 VRAM allocation: 1.0 GB used; 512 MB mine" });
+    const gpu = screen.getByRole("progressbar", { name: "GPU0 VRAM allocation: 1.0 GB used; 512 MB for tracked users" });
     expect(gpu.querySelector(".bar-mine")?.getAttribute("style")).toContain("width: 25%");
     expect(gpu.querySelector(".bar-other")?.getAttribute("style")).toContain("width: 25%");
   });
@@ -166,10 +215,10 @@ describe("ResourceDeck UI", () => {
     render(<App />);
 
     await screen.findByText("Oracle");
-    const cpu = screen.getByRole("progressbar", { name: "CPU usage: 50% used; 8.0 cores mine" });
+    const cpu = screen.getByRole("progressbar", { name: "CPU usage: 50% used; 8.0 core equivalent estimate for tracked users" });
     expect(cpu.querySelector(".bar-mine")?.getAttribute("style")).toContain("width: 50%");
     expect(cpu.querySelector(".bar-other")?.getAttribute("style")).toContain("width: 0%");
-    const ram = screen.getByRole("progressbar", { name: "RAM usage: 50% used; 4 KB RSS estimate mine" });
+    const ram = screen.getByRole("progressbar", { name: "RAM usage: 50% used; 4 KB RSS estimate for tracked users" });
     expect(ram.querySelector(".bar-mine")?.getAttribute("style")).toContain("width: 50%");
   });
 

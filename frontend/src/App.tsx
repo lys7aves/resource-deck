@@ -4,7 +4,7 @@ import { SortableContext, rectSortingStrategy, sortableKeyboardCoordinates, useS
 import { CSS } from "@dnd-kit/utilities";
 import { addConfiguredServer, deleteConfiguredServer, getConfiguredServers, getProviders, getServers, reorderConfiguredServer, setServerEnabled, subscribe, updateConfiguredServer } from "./api";
 import { bytes, mib, percent } from "./format";
-import type { CodexUsageBucket, CodexUsageWindow, ConfigServer, Container, GpuProcess, ProviderSnapshot, Server, User } from "./types";
+import type { CodexUsageBucket, CodexUsageWindow, ConfigServer, Container, ContainerEvent, GpuProcess, ProviderSnapshot, Server, User } from "./types";
 import "./styles.css";
 import "./codex.css";
 
@@ -33,7 +33,8 @@ function visibleUsers(users: User[], filteringEnabled: boolean): User[] {
 
 function MyUsage({ server }: { server: Server }) {
   const users = visibleUsers(server.users.value ?? [], server.tracked_users_configured);
-  return <div className="mine"><span>Users</span><strong>{users.reduce((sum, user) => sum + user.estimated_cpu_cores, 0).toFixed(1)} cores</strong><small>{bytes(users.reduce((sum, user) => sum + user.memory_rss_bytes, 0))} RSS</small></div>;
+  const label = server.tracked_users_configured ? "Tracked users" : "All process users";
+  return <div className="mine"><span>{label}</span><strong>{users.reduce((sum, user) => sum + user.estimated_cpu_cores, 0).toFixed(1)} core eq.</strong><small>{bytes(users.reduce((sum, user) => sum + user.memory_rss_bytes, 0))} RSS estimate</small></div>;
 }
 
 function matchingContainer(process: GpuProcess, containers: Container[]): Container | undefined {
@@ -109,25 +110,26 @@ function Card({ server, onOpen }: { server: Server; onOpen: () => void }) {
   const gpus = server.gpus.value ?? [];
   const users = visibleUsers(server.users.value ?? [], server.tracked_users_configured);
   const trackedUsers = new Set(users.map((user) => user.username));
+  const hasTrackedUsers = server.tracked_users_configured;
   const containers = server.containers.value ?? [];
   const processes = server.gpu_processes.value ?? [];
   const myCpuCores = users.reduce((sum, user) => sum + user.estimated_cpu_cores, 0);
   const myMemoryBytes = users.reduce((sum, user) => sum + user.memory_rss_bytes, 0);
-  const cpuMinePercent = system?.logical_cores && system.logical_cores > 0 ? 100 * myCpuCores / system.logical_cores : null;
+  const cpuMinePercent = hasTrackedUsers && system?.logical_cores && system.logical_cores > 0 ? 100 * myCpuCores / system.logical_cores : null;
   const memory = system?.memory_total_bytes ? 100 * (system.memory_used_bytes ?? 0) / system.memory_total_bytes : null;
-  const memoryMinePercent = system?.memory_total_bytes ? 100 * myMemoryBytes / system.memory_total_bytes : null;
+  const memoryMinePercent = hasTrackedUsers && system?.memory_total_bytes ? 100 * myMemoryBytes / system.memory_total_bytes : null;
   const gpuMemoryPercent = (used?: number | null, total?: number | null) => total && total > 0 && used != null ? 100 * used / total : null;
   return <button className="card" onClick={onOpen}>
     <header><h2>{server.display_name}</h2><span className={`status ${server.connection}`}>{server.connection}</span></header>
-    <section className="card-metric"><Metric name="CPU" value={percent(system?.cpu_utilization_percent)} sub={system?.logical_cores ? `${system.logical_cores} cores · mine ${myCpuCores.toFixed(1)} cores` : undefined} /><UsageBreakdownBar used={system?.cpu_utilization_percent} mine={cpuMinePercent} label={`CPU usage: ${percent(system?.cpu_utilization_percent)} used; ${myCpuCores.toFixed(1)} cores mine`} /></section>
-    <section className="card-metric"><Metric name="RAM" value={percent(memory)} sub={`${bytes(system?.memory_used_bytes)} / ${bytes(system?.memory_total_bytes)} · mine ${bytes(myMemoryBytes)} RSS estimate`} /><UsageBreakdownBar used={memory} mine={memoryMinePercent} label={`RAM usage: ${percent(memory)} used; ${bytes(myMemoryBytes)} RSS estimate mine`} /></section>
+    <section className="card-metric"><Metric name="CPU" value={percent(system?.cpu_utilization_percent)} sub={system?.logical_cores ? `${system.logical_cores} cores${hasTrackedUsers ? ` · tracked users ${myCpuCores.toFixed(1)} core eq. estimate` : ""}` : undefined} /><UsageBreakdownBar used={system?.cpu_utilization_percent} mine={cpuMinePercent} label={`CPU usage: ${percent(system?.cpu_utilization_percent)} used${hasTrackedUsers ? `; ${myCpuCores.toFixed(1)} core equivalent estimate for tracked users` : "; no tracked-user allocation"}`} /></section>
+    <section className="card-metric"><Metric name="RAM" value={percent(memory)} sub={`${bytes(system?.memory_used_bytes)} / ${bytes(system?.memory_total_bytes)}${hasTrackedUsers ? ` · tracked users ${bytes(myMemoryBytes)} RSS estimate` : ""}`} /><UsageBreakdownBar used={memory} mine={memoryMinePercent} label={`RAM usage: ${percent(memory)} used${hasTrackedUsers ? `; ${bytes(myMemoryBytes)} RSS estimate for tracked users` : "; no tracked-user allocation"}`} /></section>
     <div className="gpus">{gpus.length === 0 ? <p>GPU {server.gpus.status}</p> : gpus.map((gpu) => {
-      const mine = myGpuMemoryMib(gpu.uuid, processes, containers, trackedUsers);
+      const mine = hasTrackedUsers ? myGpuMemoryMib(gpu.uuid, processes, containers, trackedUsers) : 0;
       const used = gpuMemoryPercent(gpu.memory_used_mib, gpu.memory_total_mib);
       const minePercent = gpuMemoryPercent(mine, gpu.memory_total_mib);
-      return <div className="gpu" key={gpu.index}><span>GPU{gpu.index} <em className={gpu.state}>{gpu.state}</em></span><b>{percent(gpu.utilization_percent)}</b><small>{mib(gpu.memory_used_mib)} / {mib(gpu.memory_total_mib && gpu.memory_total_mib > 0 ? gpu.memory_total_mib : null)} · mine {mib(mine)} VRAM</small><UsageBreakdownBar className="gpu-vram-bar" label={`GPU${gpu.index} VRAM allocation: ${mib(gpu.memory_used_mib)} used; ${mib(mine)} mine`} used={used} mine={minePercent} /></div>;
+      return <div className="gpu" key={gpu.index}><span>GPU{gpu.index} <em className={gpu.state}>{gpu.state}</em></span><b>{percent(gpu.utilization_percent)}</b><small>{mib(gpu.memory_used_mib)} / {mib(gpu.memory_total_mib && gpu.memory_total_mib > 0 ? gpu.memory_total_mib : null)}{hasTrackedUsers ? ` · tracked ${mib(mine)} VRAM` : ""}</small><UsageBreakdownBar className="gpu-vram-bar" label={`GPU${gpu.index} VRAM allocation: ${mib(gpu.memory_used_mib)} used${hasTrackedUsers ? `; ${mib(mine)} for tracked users` : ""}`} used={used} mine={minePercent} /></div>;
     })}</div>
-    <footer className="card-footer"><MyUsage server={server} /><div className="docker"><span>Docker</span><strong>{server.containers.value?.length ?? "—"}</strong><small>containers</small></div></footer>
+    <footer className="card-footer"><MyUsage server={server} /><div className="docker"><span>Docker</span><strong>{server.containers.value?.length ?? "—"} running</strong><small>{server.container_events.value ? `${server.container_events.value.length} recent events` : `activity ${server.container_events.status}`}</small></div></footer>
   </button>;
 }
 
@@ -168,18 +170,34 @@ function GpuProcessRow({ process, containers }: { process: GpuProcess; container
   </p>;
 }
 
+function containerMemory(container: Container): string {
+  return `${bytes(container.memory_used_bytes)}${container.memory_limit_bytes ? ` / ${bytes(container.memory_limit_bytes)}` : ""}`;
+}
+
+function eventSummary(event: ContainerEvent): string {
+  const target = event.name ?? event.container_id.slice(0, 12);
+  const image = event.image ? ` · ${event.image}` : "";
+  const owner = event.owner ? ` · ${event.owner}` : "";
+  const exit = event.exit_code !== null && event.exit_code !== undefined ? ` · exit ${event.exit_code}` : "";
+  return `${target}${image}${owner}${exit}`;
+}
+
 function Detail({ server, close }: { server: Server; close: () => void }) {
   const [showAllUsers, setShowAllUsers] = useState(false);
   const allUsers = server.users.value ?? [];
   const hasTrackedUsers = server.tracked_users_configured;
   const users = showAllUsers || !hasTrackedUsers ? allUsers : visibleUsers(allUsers, true);
   const hiddenCount = hasTrackedUsers ? allUsers.length - users.length : 0;
+  const people = users.filter((user) => !user.is_system);
+  const systemUsers = users.filter((user) => user.is_system);
   const containers = server.containers.value ?? [];
+  const containerEvents = server.container_events.value ?? [];
   const processes = server.gpu_processes.value ?? [];
   return <main className="detail"><button className="back" onClick={close}>← All servers</button><h1>{server.display_name}</h1><p className="caption">Latest snapshot · {server.connection}</p><div className="detail-grid">
-    <article><div className="section-heading"><h2>Users</h2>{hasTrackedUsers && <button className="toggle" onClick={() => setShowAllUsers((value) => !value)}>{showAllUsers ? "Tracked users" : `All users${hiddenCount ? ` (${hiddenCount} hidden)` : ""}`}</button>}</div>{users.length === 0 ? <p>No tracked users running</p> : users.map((user) => <p key={user.username}><b>{user.username}</b><span>{user.estimated_cpu_cores.toFixed(2)} cores · {bytes(user.memory_rss_bytes)}</span></p>)}</article>
-    <article><h2>Docker</h2>{containers.length === 0 ? <p>No container data</p> : containers.map((container) => <p key={container.id}><b>{container.name}</b><span>{container.owner.owner ?? "unknown"} · {container.cpu_percent?.toFixed(1) ?? "—"}% CPU · {mib(container.gpu_memory_mib)} GPU VRAM</span></p>)}</article>
+    <article><div className="section-heading"><h2>Users</h2>{hasTrackedUsers && <button className="toggle" onClick={() => setShowAllUsers((value) => !value)}>{showAllUsers ? "Tracked users" : `All users${hiddenCount ? ` (${hiddenCount} hidden)` : ""}`}</button>}</div>{people.length === 0 ? <p>{hasTrackedUsers ? "No tracked users running" : "No non-system users running"}</p> : people.map((user) => <p key={user.username}><b>{user.username}</b><span>{user.estimated_cpu_cores.toFixed(2)} cores · {bytes(user.memory_rss_bytes)}</span></p>)}{systemUsers.length > 0 && <details className="system-users"><summary>System accounts ({systemUsers.length})</summary>{systemUsers.map((user) => <p key={user.username}><b>{user.username}</b><span>{user.estimated_cpu_cores.toFixed(2)} cores · {bytes(user.memory_rss_bytes)}</span></p>)}</details>}</article>
+    <article><h2>Running containers</h2>{containers.length === 0 ? <p>No running containers</p> : containers.map((container) => <p key={container.id}><b>{container.name}</b><span>{container.image ?? "unknown image"} · {container.owner.owner ?? "unknown owner"}<br />{container.cpu_percent?.toFixed(1) ?? "—"}% CPU · {containerMemory(container)} RAM · {mib(container.gpu_memory_mib)} GPU VRAM</span></p>)}</article>
     <article className="gpu-processes"><h2>GPU process mapping</h2>{processes.length === 0 ? <p>No GPU process data</p> : processes.map((process) => <GpuProcessRow key={`${process.gpu_uuid ?? "gpu"}-${process.pid}`} process={process} containers={containers} />)}</article>
+    <article className="container-events"><h2>Recent container activity <small>({server.container_events.status})</small></h2>{containerEvents.length === 0 ? <p>No container activity observed in this app session</p> : containerEvents.map((event) => <p key={`${event.occurred_at}-${event.container_id}-${event.action}`}><b>{event.action}</b><span>{new Date(event.occurred_at).toLocaleString()}<br />{eventSummary(event)}</span></p>)}</article>
   </div></main>;
 }
 

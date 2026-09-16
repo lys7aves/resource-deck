@@ -4,7 +4,7 @@
 
 ResourceDeck은 소수의 Linux 서버를 SSH로 모니터링하는 로컬·읽기 전용 대시보드입니다. 모니터링 대상 서버에 에이전트를 설치하지 않고 시스템, GPU, 사용자, Docker, GPU 프로세스 귀속 정보를 표시합니다.
 
-Docker 수명 주기, 프로세스 제어, 원격 설정 변경 명령은 전송하지 않습니다. 대시보드는 로컬 전용으로 `localhost` 또는 loopback IP bind 주소만 허용하고 로컬 브라우저 요청을 검증하며, SSH 비밀번호나 개인 키를 저장하지 않습니다.
+Docker 수명 주기를 **변경**하거나 프로세스를 제어하거나 원격 설정을 변경하는 명령은 전송하지 않습니다. 대시보드는 로컬 전용으로 `localhost` 또는 loopback IP bind 주소만 허용하고 로컬 브라우저 요청을 검증하며, SSH 비밀번호나 개인 키를 저장하지 않습니다.
 
 ## 요구 사항
 
@@ -169,6 +169,12 @@ providers:
 ResourceDeck은 사용량만 읽으며 로그인, 크레딧 구매, reset 실행을 하지 않습니다. Codex 사용량을 활성화해도 대시보드는 로컬 연결만 허용합니다.
 
 서버 상세 화면에서는 GPU PID → container → owner 귀속을 표시할 수 있습니다. 근거의 신뢰도를 표시하며 원시 cgroup 내용은 노출하지 않습니다.
+
+### Docker 컨테이너와 사용자 지표
+
+Docker collector는 SSH 계정의 **기본 Docker daemon**에서 보이는 모든 사용자의 실행 중 컨테이너를 표시합니다. 별도 Docker context나 다른 사용자 계정의 rootless Docker daemon은 수집하지 않습니다. 상세 화면의 활동 이력은 `docker events`를 읽어 create/start/restart/stop/kill/die/destroy 이벤트를 보여 주며, 최근 24시간(최대 10,000건)만 메모리에 보관합니다. 앱을 재시작하면 이력은 초기화됩니다.
+
+서버 카드의 RAM은 `/proc/meminfo`에서 계산한 시스템 전체 사용량(`MemTotal - MemAvailable`)입니다. `Tracked users` 또는 `All process users`의 RSS estimate는 각 프로세스 RSS의 합계로, 공유 메모리를 중복해서 셀 수 있으므로 시스템 RAM과 일치하지 않을 수 있습니다. `core eq.`도 프로세스 `%CPU`를 합산한 순간 추정치입니다.
 
 ## 오류 해결
 

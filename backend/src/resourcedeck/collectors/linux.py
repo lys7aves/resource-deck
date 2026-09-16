@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from ..models import SystemMetrics
 
 SYSTEM_COMMAND = "LC_ALL=C sh -c 'cat /proc/stat; echo __MEMINFO__; cat /proc/meminfo; echo __LOADAVG__; cat /proc/loadavg; echo __CORES__; getconf _NPROCESSORS_ONLN'"
-USERS_COMMAND = "LC_ALL=C ps -eo user=,pcpu=,rss= --no-headers"
+USERS_COMMAND = "LC_ALL=C ps -eo uid=,user:32=,pcpu=,rss= --no-headers"
 
 
 @dataclass(slots=True)

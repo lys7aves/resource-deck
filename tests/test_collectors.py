@@ -21,9 +21,13 @@ def test_gpu_reserved_when_vram_is_high_and_util_is_low():
 
 
 def test_user_cpu_is_shown_as_estimated_cores():
-    users = parse_users("yuseop 840.0 1024\nyuseop 10.0 512\n")
-    assert users[0].estimated_cpu_cores == 8.5
-    assert users[0].memory_rss_bytes == 1536 * 1024
+    users = parse_users("1000 yuseop 840.0 1024\n1000 yuseop 10.0 512\n998 system-service 0.0 256\n")
+    yuseop = next(user for user in users if user.username == "yuseop")
+    system = next(user for user in users if user.username == "system-service")
+    assert yuseop.estimated_cpu_cores == 8.5
+    assert yuseop.memory_rss_bytes == 1536 * 1024
+    assert yuseop.is_system is False
+    assert system.is_system is True
 
 
 def test_owner_label_has_priority():
@@ -32,10 +36,14 @@ def test_owner_label_has_priority():
     assert result.source == "label"
 
 from resourcedeck.collectors.docker import (
+    DOCKER_INVENTORY_COMMAND,
+    EVENT_UNTIL_PREFIX,
     ProcessEvidence,
+    build_docker_events_command,
     build_docker_top_command,
     build_process_evidence_command,
     parse_containers,
+    parse_docker_events,
     parse_process_evidence,
 )
 from resourcedeck.models import GpuProcess
@@ -56,6 +64,34 @@ def test_selected_inspect_owner_and_cgroup_gpu_mapping():
     assert process.container_id == identifier
     assert process.container_mapping_source == "proc_cgroup"
     assert process.container_mapping_confidence == "high"
+
+
+def test_running_inventory_and_short_stats_id_are_matched():
+    identifier = "a" * 64
+    containers = parse_containers(_inventory(identifier), '{"ID":"' + identifier[:12] + '","CPUPerc":"12.5%","MemUsage":"1.5GiB / 4GiB"}', OwnerHints(), [])
+    assert "docker ps -q" in DOCKER_INVENTORY_COMMAND
+    assert "docker ps -aq" not in DOCKER_INVENTORY_COMMAND
+    assert 'printf \\"%s\\x1f' in DOCKER_INVENTORY_COMMAND
+    assert '%v\\x1f%s' in DOCKER_INVENTORY_COMMAND
+    assert containers[0].cpu_percent == 12.5
+    assert containers[0].memory_used_bytes == int(1.5 * 1024**3)
+
+
+def test_docker_events_selects_lifecycle_metadata_without_raw_attributes():
+    identifier = "b" * 64
+    output = "\n".join((
+        EVENT_UNTIL_PREFIX + "100",
+        '{"Action":"create","timeNano":90000000000,"Actor":{"ID":"' + identifier + '","Attributes":{"name":"brief-job","image":"repo/job:latest","resourcedeck.owner":"alice","secret":"never expose"}}}',
+        '{"Action":"health_status","timeNano":91000000000,"Actor":{"ID":"' + identifier + '","Attributes":{}}}',
+        '{"Action":"die","timeNano":92000000000,"Actor":{"ID":"' + identifier + '","Attributes":{"name":"brief-job","exitCode":"12"}}}',
+    ))
+    until, events = parse_docker_events(output, OwnerHints())
+    assert until == 100
+    assert [(item.action, item.name, item.exit_code) for item in events] == [("create", "brief-job", None), ("die", "brief-job", 12)]
+    assert events[0].owner == "alice"
+    assert "secret" not in events[0].model_dump_json()
+    command = build_docker_events_command(100)
+    assert "--filter type=container" in command and "--since 99" in command
 
 
 def test_gpu_mapping_falls_back_to_init_pid_then_docker_top_then_unmapped():

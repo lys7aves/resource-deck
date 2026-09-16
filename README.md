@@ -4,7 +4,7 @@
 
 ResourceDeck is a local, read-only dashboard for monitoring a small group of Linux servers over SSH. It shows system, GPU, user, Docker, and GPU-process attribution data without installing an agent on the monitored servers.
 
-It never sends Docker lifecycle, process-control, or remote-configuration commands. The dashboard is local-only: it accepts only `localhost` or loopback IP bind addresses, validates local browser requests, and does not store SSH passwords or private keys.
+It never sends commands which change a Docker lifecycle, control processes, or change remote configuration. The dashboard is local-only: it accepts only `localhost` or loopback IP bind addresses, validates local browser requests, and does not store SSH passwords or private keys.
 
 ## Requirements
 
@@ -169,6 +169,12 @@ providers:
 ResourceDeck only reads usage data; it never signs in, purchases credits, or consumes resets. The dashboard only accepts local connections, including when Codex usage is enabled.
 
 The server detail view can show GPU PID-to-container-to-owner attribution. It displays the evidence confidence and never exposes raw cgroup contents.
+
+### Docker containers and user metrics
+
+The Docker collector shows every running container visible through the SSH account's **default Docker daemon**, regardless of owner. It does not collect separate Docker contexts or rootless Docker daemons owned by other users. The detail view reads `docker events` for create/start/restart/stop/kill/die/destroy activity and retains the latest 24 hours (up to 10,000 events) only in memory. Restarting the app clears that history.
+
+The server-card RAM value is total system memory in use (`MemTotal - MemAvailable`) from `/proc/meminfo`. The `Tracked users` or `All process users` RSS estimate is a sum of each process's RSS; shared memory can be counted more than once, so it does not necessarily equal system RAM. `core eq.` is likewise an instantaneous sum of process `%CPU` estimates.
 
 ## Troubleshooting
 

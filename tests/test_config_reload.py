@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 from pathlib import Path
+from datetime import timedelta
 
 import pytest
 
 from resourcedeck.config import AppSettings, CodexProviderSettings, PollingSettings, ServerSettings, Settings
 from resourcedeck.main import ConfigWatcher
-from resourcedeck.models import ServerSnapshot
-from resourcedeck.scheduler import PollingOrchestrator
+from resourcedeck.models import ContainerEvent, ServerSnapshot, utcnow
+from resourcedeck.scheduler import PollingOrchestrator, ServerPoller
+from resourcedeck.ssh import CommandResult
 from resourcedeck.state import SnapshotStore
 
 
@@ -71,6 +73,40 @@ async def test_config_watcher_keeps_last_valid_configuration(tmp_path: Path):
 def test_duplicate_server_ids_are_rejected():
     with pytest.raises(ValueError, match="server IDs must be unique"):
         Settings.model_validate({"servers": [{"id": "same", "ssh_host": "one"}, {"id": "same", "ssh_host": "two"}]})
+
+
+def test_container_event_history_deduplicates_expires_and_is_bounded():
+    poller = PollingOrchestrator([server("one")], PollingSettings(), SnapshotStore()).pollers["one"]
+    current = ContainerEvent(occurred_at=utcnow(), action="create", container_id="a")
+    expired = ContainerEvent(occurred_at=utcnow() - timedelta(hours=25), action="destroy", container_id="old")
+    assert poller.retain_container_events([current, current, expired]) == [current]
+    many = [ContainerEvent(occurred_at=utcnow(), action="create", container_id=str(index)) for index in range(10_001)]
+    assert len(poller.retain_container_events(many)) == 10_000
+
+
+@pytest.mark.asyncio
+async def test_docker_event_failure_keeps_current_containers_and_stales_only_history():
+    polling = PollingSettings(docker_seconds=0, users_seconds=60)
+    poller = ServerPoller(server("one"), polling, SnapshotStore())
+    failed = False
+
+    async def run(command: str, timeout: float | None = None) -> CommandResult:
+        if "docker events" in command:
+            return CommandResult("", "denied", 1 if failed else 0)
+        if "date +%s" in command:
+            return CommandResult("__RESOURCEDECK_EVENTS_UNTIL__100\n", "", 0)
+        if "cat /proc/stat" in command:
+            return CommandResult("cpu  100 0 20 880 0 0 0 0 0 0\n__MEMINFO__\nMemTotal: 1000 kB\nMemAvailable: 400 kB\n__LOADAVG__\n1.25 0 0 1/2 3\n__CORES__\n8\n", "", 0)
+        return CommandResult("", "", 0)
+
+    poller.executor.run = run  # type: ignore[method-assign]
+    await poller.collect_once()
+    assert poller.snapshot.containers.status == "ok"
+    assert poller.snapshot.container_events.status == "ok"
+    failed = True
+    await poller.collect_once()
+    assert poller.snapshot.containers.status == "ok"
+    assert poller.snapshot.container_events.status == "stale"
 
 
 @pytest.mark.parametrize(

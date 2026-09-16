@@ -4,15 +4,20 @@ import json
 import re
 import shlex
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 from ..attribution import attribute_owner
 from ..config import OwnerHints
-from ..models import ContainerMetrics, GpuProcess
+from ..models import ContainerEvent, ContainerMetrics, GpuProcess
 
 # Inspect only fields that the dashboard needs. This intentionally excludes
 # Config.Env and any other potentially sensitive inspect fields.
-DOCKER_INVENTORY_COMMAND = r'''LC_ALL=C sh -c 'docker ps -aq --no-trunc | xargs -r -n 1 docker inspect --format "{{.Id}}\037{{.Name}}\037{{.Config.Image}}\037{{.State.Status}}\037{{.State.StartedAt}}\037{{.State.Pid}}\037{{json .Config.Labels}}\037{{json .Mounts}}"' '''
+# Go template text outside an action does not process shell-style escapes. Keep
+# the record separator inside printf so Docker emits a real 0x1f byte.
+DOCKER_INVENTORY_COMMAND = r'''LC_ALL=C sh -c 'docker ps -q --no-trunc | xargs -r -n 1 docker inspect --format "{{printf \"%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%v\x1f%s\x1f%s\" .Id .Name .Config.Image .State.Status .State.StartedAt .State.Pid (json .Config.Labels) (json .Mounts)}}"' '''
 DOCKER_STATS_COMMAND = "LC_ALL=C docker stats --no-stream --format '{{json .}}'"
+EVENT_UNTIL_PREFIX = "__RESOURCEDECK_EVENTS_UNTIL__"
+LIFECYCLE_ACTIONS = frozenset({"create", "start", "restart", "stop", "kill", "die", "destroy"})
 
 
 @dataclass(slots=True)
@@ -49,6 +54,19 @@ def build_docker_top_command(container_ids: list[str]) -> str | None:
         "LC_ALL=C sh -c 'for container_id in " + words + "; do "
         "printf \"__RESOURCEDECK_TOP__%s\\n\" \"$container_id\"; "
         "docker top \"$container_id\" -eo pid= 2>/dev/null; done'"
+    )
+
+
+def build_docker_events_command(since: int | None) -> str:
+    """Read a bounded interval of daemon events using the remote host clock."""
+    if since is None:
+        return "LC_ALL=C sh -c 'date +%s | sed \"s/^/" + EVENT_UNTIL_PREFIX + "/\"'"
+    safe_since = max(0, int(since) - 1)  # one-second overlap; callers deduplicate.
+    return (
+        "LC_ALL=C sh -c 'until=$(date +%s); "
+        "printf \"" + EVENT_UNTIL_PREFIX + "%s\\n\" \"$until\"; "
+        "docker events --since " + str(safe_since) + " --until \"$until\" "
+        "--filter type=container --format \"{{json .}}\"'"
     )
 
 
@@ -96,6 +114,49 @@ def parse_docker_top(output: str) -> dict[str, set[int]]:
             except (ValueError, IndexError):
                 pass
     return result
+
+
+def parse_docker_events(output: str, hints: OwnerHints, known: dict[str, ContainerMetrics] | None = None) -> tuple[int | None, list[ContainerEvent]]:
+    """Parse selected Docker lifecycle events without retaining raw attributes."""
+    until: int | None = None
+    events: list[ContainerEvent] = []
+    known = known or {}
+    for line in output.splitlines():
+        if line.startswith(EVENT_UNTIL_PREFIX):
+            try:
+                until = int(line.removeprefix(EVENT_UNTIL_PREFIX))
+            except ValueError:
+                pass
+            continue
+        try:
+            item = json.loads(line)
+            action = str(item.get("Action", ""))
+            identifier = str((item.get("Actor") or {}).get("ID", ""))
+            attributes = (item.get("Actor") or {}).get("Attributes") or {}
+        except (json.JSONDecodeError, AttributeError):
+            continue
+        if action not in LIFECYCLE_ACTIONS or not identifier or not isinstance(attributes, dict):
+            continue
+        timestamp = item.get("timeNano")
+        try:
+            nanoseconds = int(timestamp)
+            occurred_at = datetime.fromtimestamp(nanoseconds // 1_000_000_000, timezone.utc).replace(microsecond=(nanoseconds % 1_000_000_000) // 1_000)
+        except (TypeError, ValueError, OSError):
+            continue
+        container = known.get(identifier) or next((value for key, value in known.items() if key.startswith(identifier) or identifier.startswith(key)), None)
+        name = str(attributes.get("name") or (container.name if container else "")) or None
+        image = str(attributes.get("image") or (container.image if container else "")) or None
+        attribution = container.owner if container else attribute_owner(attributes, [], name or "", hints)
+        try:
+            exit_code = int(attributes["exitCode"]) if "exitCode" in attributes else None
+        except (TypeError, ValueError):
+            exit_code = None
+        events.append(ContainerEvent(
+            occurred_at=occurred_at, time_nano=nanoseconds, action=action, container_id=identifier, name=name, image=image,
+            owner=attribution.owner, owner_source=attribution.source if attribution.owner else None,
+            exit_code=exit_code,
+        ))
+    return until, events
 
 
 def _inspect_items(inventory: str) -> dict[str, dict]:
@@ -154,7 +215,7 @@ def parse_containers(inventory: str, stats: str, hints: OwnerHints, gpu_processe
             continue
     output: list[ContainerMetrics] = []
     for identifier, item in items.items():
-        stat = statistics.get(identifier, {})
+        stat = next((value for stat_id, value in statistics.items() if identifier.startswith(stat_id) or stat_id.startswith(identifier)), {})
         memory = str(stat.get("MemUsage", "")).split("/")
         try:
             cpu = float(str(stat.get("CPUPerc", "")).replace("%", ""))
