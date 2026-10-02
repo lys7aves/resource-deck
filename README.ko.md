@@ -178,13 +178,30 @@ Docker collector는 SSH 계정의 **기본 Docker daemon**에서 보이는 모�
 
 ## 오류 해결
 
-먼저 다음 명령으로 상태와 로그를 확인합니다.
+### 페이지가 열리지 않을 때: 상태 확인과 재시작
+
+이 저장소의 WSL/Linux 터미널에서 사용자 서비스와 HTTP 응답을 확인합니다.
 
 ```bash
-systemctl --user is-active resourcedeck.service
-journalctl --user -u resourcedeck.service -f
-curl http://127.0.0.1:8765/healthz
+./deploy/service.sh status
+curl -fsS http://127.0.0.1:8765/healthz
 ```
+
+서비스가 실행 중이고 `"ok":true`가 나오면 앱은 동작 중입니다. 같은 컴퓨터에서 <http://127.0.0.1:8765>를 엽니다. 서비스가 중지됐다면 시작하고, 실행 중인데도 페이지가 열리지 않으면 재시작한 뒤 다시 확인합니다.
+
+```bash
+./deploy/service.sh start                       # 중지된 서비스
+systemctl --user restart resourcedeck.service  # 실행 중인 서비스 재시작
+curl -fsS http://127.0.0.1:8765/healthz
+```
+
+`start`와 `restart`는 3장 또는 4장의 systemd 사용자 서비스가 설치된 경우에 사용합니다. `Unit resourcedeck.service not found`가 나오면 `./deploy/service.sh install --manual`을 실행한 다음 `./deploy/service.sh start`를 실행합니다. 시작 또는 재시작에 실패하면 최근 로그를 확인합니다.
+
+```bash
+journalctl --user -u resourcedeck.service -n 100 --no-pager
+```
+
+WSL에서는 상태 확인이 성공하지만 Windows 브라우저에서 열리지 않으면 위의 정확한 URL로 접속하고, Windows에서 `Invoke-WebRequest http://127.0.0.1:8765/healthz`로 확인한 뒤 페이지를 새로고침합니다. 서비스는 WSL loopback 주소에 바인딩하므로 다른 컴퓨터에서는 직접 열 수 없습니다. `systemctl --user`가 `Failed to connect to bus`를 출력하면 현재 셸에서 사용자 systemd에 접근할 수 없는 상태입니다. systemd가 활성화된 일반 WSL 로그인 셸에서 실행합니다. `/healthz`에 `"ok":false` 또는 `config_reload_error`가 나오면 반복해서 재시작하기 전에 응답 내용과 로그를 확인합니다.
 
 | 증상 | 확인 및 해결 |
 | --- | --- |

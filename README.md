@@ -178,13 +178,30 @@ The server-card RAM value is total system memory in use (`MemTotal - MemAvailabl
 
 ## Troubleshooting
 
-Use these commands first:
+### Page does not open: check and restart
+
+From this checkout in WSL/Linux, check the user service and its HTTP endpoint:
 
 ```bash
-systemctl --user is-active resourcedeck.service
-journalctl --user -u resourcedeck.service -f
-curl http://127.0.0.1:8765/healthz
+./deploy/service.sh status
+curl -fsS http://127.0.0.1:8765/healthz
 ```
+
+An active service and `"ok":true` mean the app is running. Open <http://127.0.0.1:8765> on the same computer. If the service is stopped, start it; if it is running but the page still fails, restart it and check again:
+
+```bash
+./deploy/service.sh start                       # stopped service
+systemctl --user restart resourcedeck.service  # running service that needs a restart
+curl -fsS http://127.0.0.1:8765/healthz
+```
+
+`start` and `restart` require the systemd user service installed in section 3 or 4. If `Unit resourcedeck.service not found` appears, run `./deploy/service.sh install --manual` and then `./deploy/service.sh start`. To inspect a failed start or restart, read the recent logs:
+
+```bash
+journalctl --user -u resourcedeck.service -n 100 --no-pager
+```
+
+If the health check works in WSL but the page still does not open in a Windows browser, try the exact URL above, check it from Windows with `Invoke-WebRequest http://127.0.0.1:8765/healthz`, and reload the browser page. The service binds to the WSL loopback address; a remote computer cannot open it directly. A `Failed to connect to bus` error from `systemctl --user` means the current shell cannot access the user systemd instance; run the commands in your normal WSL login shell with systemd enabled. If `/healthz` reports `"ok":false` or `config_reload_error`, use its details and the logs before restarting repeatedly.
 
 | Symptom | Check and resolution |
 | --- | --- |
