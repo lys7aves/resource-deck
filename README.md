@@ -168,6 +168,8 @@ providers:
 
 ResourceDeck only reads usage data; it never signs in, purchases credits, or consumes resets. The dashboard only accepts local connections, including when Codex usage is enabled.
 
+Codex Desktop installs its WSL executable in a versioned directory under `.codex/bin/wsl`. When an update removes the configured executable, ResourceDeck searches that directory for the newest executable and reconnects automatically. The usage collector retries failed connections using `reconnect_seconds`.
+
 The server detail view can show GPU PID-to-container-to-owner attribution. It displays the evidence confidence and never exposes raw cgroup contents.
 
 ### Docker containers and user metrics
@@ -210,5 +212,18 @@ If the health check works in WSL but the page still does not open in a Windows b
 | A server is Offline, Degraded, or has no snapshot | From the ResourceDeck machine, run `ssh` with the exact configured `ssh_host`, user, and key. Confirm the target account, network access, `ssh_known_hosts` path, and that the host key matches the trusted fingerprint. Check the dashboard or log for collector-specific errors. |
 | A changed bind address or port has no effect | Restart the running app or execute `./deploy/service.sh stop` followed by `./deploy/service.sh start`. Only `app.bind` and `app.port` require this restart. |
 | The app rejects a bind address | Use `localhost`, `127.0.0.1`, or `::1`. ResourceDeck does not support wildcard, LAN, or external bind addresses. |
-| Codex usage is unavailable | Confirm that `providers.codex.enabled` is true, `executable` is an absolute existing path, and the local Codex account is signed in. The dashboard reports unavailable usage while it retries the connection. |
+| Codex usage is unavailable | Follow [Codex usage recovery](#codex-usage-recovery) below. |
 | Autostart does not run after Windows sign-in | Confirm WSL systemd is enabled, rerun `./deploy/service.sh install --autostart`, and check that the Windows Scheduled Task named `ResourceDeck-<WSL distribution>` exists. |
+
+### Codex usage recovery
+
+Run these commands from the ResourceDeck WSL/Linux environment to inspect the provider status and the current Codex executable path:
+
+```bash
+curl -fsS http://127.0.0.1:8765/api/v1/providers
+command -v codex
+```
+
+In the provider response, `status: "ok"` means usage is available. If it is unavailable, check `error_code`. For `codex_executable_not_found`, compare the configured path with the current path printed by `command -v codex`. If they differ, update `providers.codex.executable` in `config/servers.yaml` to that absolute path. Also confirm `providers.codex.enabled` is `true` and that the local Codex account is signed in if the error code indicates an authentication problem.
+
+ResourceDeck reloads valid configuration changes automatically. After changing the executable path, wait briefly for the reload and check `/api/v1/providers` again. The Codex collector also retries failed connections every `reconnect_seconds` (15 seconds by default). A service restart is not needed for this recovery.

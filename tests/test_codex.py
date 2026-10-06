@@ -2,7 +2,7 @@ import asyncio
 
 import pytest
 
-from resourcedeck.collectors.codex import CodexAppServerClient, CodexCollectorError, codex_environment, merge_rate_limit_update, parse_rate_limits_response, read_codex_rate_limits
+from resourcedeck.collectors.codex import CodexAppServerClient, CodexCollectorError, codex_environment, merge_rate_limit_update, parse_rate_limits_response, read_codex_rate_limits, resolve_codex_executable
 from resourcedeck.config import CodexProviderSettings
 from resourcedeck.models import MetricStatus
 from resourcedeck.scheduler import CodexUsagePoller
@@ -62,6 +62,17 @@ def test_codex_environment_uses_home_containing_executable():
     environment = codex_environment("/mnt/c/Users/example/.codex/bin/wsl/version/codex")
     assert environment["CODEX_HOME"] == "/mnt/c/Users/example/.codex"
     assert environment["CODEX_SQLITE_HOME"].endswith("/.codex/sqlite")
+
+
+def test_resolve_codex_executable_follows_desktop_update(tmp_path):
+    versions = tmp_path / ".codex" / "bin" / "wsl"
+    previous = versions / "previous" / "codex"
+    current = versions / "current" / "codex"
+    current.parent.mkdir(parents=True)
+    current.write_text("binary")
+    current.chmod(0o755)
+    assert resolve_codex_executable(str(previous)) == str(current)
+    assert resolve_codex_executable(str(tmp_path / "other" / "codex")) == str(tmp_path / "other" / "codex")
 
 
 def test_rate_limit_notification_merges_partial_window_update():

@@ -168,6 +168,8 @@ providers:
 
 ResourceDeck은 사용량만 읽으며 로그인, 크레딧 구매, reset 실행을 하지 않습니다. Codex 사용량을 활성화해도 대시보드는 로컬 연결만 허용합니다.
 
+Codex Desktop은 WSL 실행 파일을 `.codex/bin/wsl` 아래 버전별 디렉터리에 설치합니다. 업데이트로 설정된 실행 파일이 사라지면 ResourceDeck은 해당 디렉터리에서 가장 최신의 실행 파일을 찾아 자동으로 다시 연결합니다. 연결 실패 시 사용량 collector는 `reconnect_seconds` 간격으로 재시도합니다.
+
 서버 상세 화면에서는 GPU PID → container → owner 귀속을 표시할 수 있습니다. 근거의 신뢰도를 표시하며 원시 cgroup 내용은 노출하지 않습니다.
 
 ### Docker 컨테이너와 사용자 지표
@@ -210,5 +212,18 @@ WSL에서는 상태 확인이 성공하지만 Windows 브라우저에서 열리�
 | 서버가 Offline/Degraded이거나 snapshot이 없음 | ResourceDeck을 실행하는 머신에서 설정한 `ssh_host`, 사용자, 키와 정확히 같은 값으로 `ssh`를 실행합니다. 대상 계정, 네트워크 접근, `ssh_known_hosts` 경로, 신뢰한 지문과 host key의 일치를 확인합니다. 대시보드나 로그에서 collector별 오류도 확인합니다. |
 | bind 주소 또는 포트를 바꿨는데 반영되지 않음 | 실행 중인 앱을 재시작하거나 `./deploy/service.sh stop` 후 `./deploy/service.sh start`를 실행합니다. 재시작이 필요한 설정은 `app.bind`, `app.port`뿐입니다. |
 | 앱이 bind 주소를 거부함 | `localhost`, `127.0.0.1`, `::1`을 사용합니다. ResourceDeck은 와일드카드·LAN·외부 bind 주소를 지원하지 않습니다. |
-| Codex 사용량을 볼 수 없음 | `providers.codex.enabled`가 true인지, `executable`이 존재하는 절대 경로인지, 로컬 Codex 계정이 로그인 상태인지 확인합니다. 대시보드는 연결을 재시도하는 동안 사용량을 사용할 수 없다고 표시합니다. |
+| Codex 사용량을 볼 수 없음 | 아래의 Codex 사용량 복구 절차를 따릅니다. |
 | Windows 로그인 후 자동 실행되지 않음 | WSL systemd 활성화 여부를 확인하고 `./deploy/service.sh install --autostart`를 다시 실행합니다. `ResourceDeck-<WSL distribution>` 이름의 Windows 예약 작업이 있는지도 확인합니다. |
+
+### Codex 사용량 복구
+
+ResourceDeck을 실행하는 WSL/Linux 환경에서 provider 상태와 현재 Codex 실행 파일 경로를 확인합니다.
+
+```bash
+curl -fsS http://127.0.0.1:8765/api/v1/providers
+command -v codex
+```
+
+provider 응답의 `status: "ok"`는 사용량을 정상적으로 읽고 있다는 뜻입니다. 사용할 수 없는 경우 `error_code`를 확인합니다. 오류가 `codex_executable_not_found`이면 `command -v codex`가 출력한 현재 경로와 설정을 비교합니다. 경로가 다르면 `config/servers.yaml`의 `providers.codex.executable`을 출력된 절대 경로로 바꿉니다. 인증 오류라면 `providers.codex.enabled`가 `true`인지, 로컬 Codex 계정에 로그인되어 있는지도 확인합니다.
+
+유효한 설정 변경은 자동으로 반영됩니다. 실행 파일 경로를 바꾼 뒤 잠시 기다렸다가 `/api/v1/providers`를 다시 확인합니다. Codex collector도 `reconnect_seconds` 간격으로 재시도하며, 기본 간격은 15초입니다. 이 복구를 위해 서비스를 재시작할 필요는 없습니다.

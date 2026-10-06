@@ -27,6 +27,26 @@ def codex_environment(executable: str) -> dict[str, str]:
     return environment
 
 
+def resolve_codex_executable(executable: str) -> str:
+    """Follow Codex desktop's versioned WSL binary when an update removes the old one."""
+    configured = Path(executable)
+    if configured.is_file():
+        return executable
+    # Only search beside a formerly configured Codex desktop WSL binary.
+    if (configured.name, configured.parent.parent.name, configured.parent.parent.parent.name) != ("codex", "wsl", "bin"):
+        return executable
+    if configured.parent.parent.parent.parent.name != ".codex":
+        return executable
+    try:
+        candidates = (
+            path for path in configured.parent.parent.glob("*/codex")
+            if path.is_file() and os.access(path, os.X_OK)
+        )
+        return str(max(candidates, key=lambda path: path.stat().st_mtime))
+    except (OSError, ValueError):
+        return executable
+
+
 def _window(kind: str, value: Any) -> dict[str, Any] | None:
     if not isinstance(value, Mapping):
         return None
@@ -112,7 +132,8 @@ class CodexAppServerClient:
 
     async def connect(self) -> None:
         try:
-            self.process = await asyncio.create_subprocess_exec(self.executable, "app-server", stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL, env=codex_environment(self.executable))
+            executable = resolve_codex_executable(self.executable)
+            self.process = await asyncio.create_subprocess_exec(executable, "app-server", stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL, env=codex_environment(executable))
         except FileNotFoundError as error:
             raise CodexCollectorError("codex_executable_not_found") from error
         except OSError as error:
