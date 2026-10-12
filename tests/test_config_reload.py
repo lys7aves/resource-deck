@@ -121,3 +121,71 @@ def test_loopback_bind_addresses_are_accepted(bind: str, expected: str):
 def test_non_loopback_bind_addresses_are_rejected(bind: str):
     with pytest.raises(ValueError, match="loopback"):
         AppSettings(bind=bind)
+
+
+@pytest.mark.parametrize("failure_command", ["--query-compute-apps", "--query-gpu", "/proc/$root_pid/cgroup", "docker top"])
+async def test_container_vram_invalidates_between_docker_polls_and_recovers(failure_command):
+    from resourcedeck.collectors.docker import DOCKER_INVENTORY_COMMAND, DOCKER_STATS_COMMAND
+
+    poller = ServerPoller(server("one"), PollingSettings(), SnapshotStore())
+    identifier = "a" * 64
+    failed = False
+    docker_due = True
+    poller.due = lambda name, seconds: name != "docker" or docker_due
+
+    async def run(command, timeout=None):
+        if failed and failure_command in command:
+            return CommandResult("", "denied", 1)
+        if "cat /proc/stat" in command:
+            return CommandResult("cpu  100 0 20 880\n__MEMINFO__\nMemTotal: 1000 kB\nMemAvailable: 400 kB\n__LOADAVG__\n1.25\n__CORES__\n8\n", "", 0)
+        if "--query-compute-apps" in command:
+            return CommandResult("GPU-a, 123, python, 400\n", "", 0)
+        if "--query-gpu" in command:
+            return CommandResult("0, GPU-a, A100, 0, 400, 16000, 45\n", "", 0)
+        if "/proc/$root_pid/cgroup" in command:
+            return CommandResult(f"123\x1f77,1,\x1f0::/docker/{identifier}\x1falice\n", "", 0)
+        if command == DOCKER_INVENTORY_COMMAND:
+            return CommandResult("\x1f".join((identifier, "/trainer", "repo/train", "running", "2026-08-31T00:00:00Z", "77", "{}", "[]")), "", 0)
+        if command == DOCKER_STATS_COMMAND:
+            return CommandResult('{"ID":"' + identifier + '","CPUPerc":"305.1%","MemUsage":"1GiB / 4GiB"}', "", 0)
+        if "date +%s" in command:
+            return CommandResult("__RESOURCEDECK_EVENTS_UNTIL__100\n", "", 0)
+        return CommandResult("", "", 0)
+
+    poller.executor.run = run
+    await poller.collect_once()
+    assert poller.snapshot.containers.value[0].gpu_memory_mib == 400
+    poller.due = lambda name, seconds: name == "docker"
+    await poller.collect_once()
+    assert poller.snapshot.containers.value[0].gpu_memory_mib == 400
+    poller.due = lambda name, seconds: name != "docker" or docker_due
+    # Evidence and GPU failures must invalidate the value without a Docker poll.
+    # docker top itself is collected only when Docker is due.
+    docker_due = failure_command == "docker top"
+    failed = True
+    await poller.collect_once()
+    assert poller.snapshot.containers.value[0].gpu_memory_mib is None
+    assert poller.snapshot.containers.value[0].cpu_percent == 305.1
+    if failure_command == "--query-compute-apps":
+        assert poller.snapshot.gpu_processes.status == "stale"
+    failed = False
+    docker_due = True
+    await poller.collect_once()
+    assert poller.snapshot.containers.value[0].gpu_memory_mib == 400
+    assert poller.snapshot.gpu_processes.status == "ok"
+    poller.server.collectors.gpu = "off"
+    await poller.collect_once()
+    assert poller.snapshot.containers.value[0].gpu_memory_mib is None
+
+
+async def test_first_gpu_process_failure_sets_unavailable():
+    poller = ServerPoller(server("one"), PollingSettings(), SnapshotStore())
+
+    async def run(command, timeout=None):
+        if "cat /proc/stat" in command:
+            return CommandResult("cpu  100 0 20 880\n__MEMINFO__\nMemTotal: 1000 kB\nMemAvailable: 400 kB\n__LOADAVG__\n1\n__CORES__\n8\n", "", 0)
+        return CommandResult("", "denied", 1)
+
+    poller.executor.run = run
+    await poller.collect_once()
+    assert poller.snapshot.gpu_processes.status == "unavailable"

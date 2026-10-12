@@ -170,8 +170,69 @@ function GpuProcessRow({ process, containers }: { process: GpuProcess; container
   </p>;
 }
 
-function containerMemory(container: Container): string {
-  return `${bytes(container.memory_used_bytes)}${container.memory_limit_bytes ? ` / ${bytes(container.memory_limit_bytes)}` : ""}`;
+function knownUsage(value?: number | null): value is number {
+  return value != null && Number.isFinite(value) && value >= 0;
+}
+
+function serverShare(used?: number | null, total?: number | null): number | null {
+  return knownUsage(used) && knownUsage(total) && total > 0 ? 100 * used / total : null;
+}
+
+type ContainerCapacity = { cores: number | null; memoryBytes: number | null; gpuMemoryMib: number | null };
+
+function containerCapacity(server: Server): ContainerCapacity {
+  const system = server.system.value;
+  const gpus = server.gpus.value;
+  const gpuMemoryMib = gpus && gpus.length > 0 && gpus.every((gpu) => knownUsage(gpu.memory_total_mib) && gpu.memory_total_mib > 0)
+    ? gpus.reduce((sum, gpu) => sum + gpu.memory_total_mib!, 0) : null;
+  return {
+    cores: knownUsage(system?.logical_cores) && system.logical_cores > 0 ? system.logical_cores : null,
+    memoryBytes: knownUsage(system?.memory_total_bytes) && system.memory_total_bytes > 0 ? system.memory_total_bytes : null,
+    gpuMemoryMib,
+  };
+}
+
+function ContainerResource({ name, containerName, value, sub, share, color }: { name: string; containerName: string; value: string; sub?: string; share: number | null; color: string }) {
+  return <div className={`container-resource ${color}`}>
+    <span className="resource-name">{name}</span><strong>{value}</strong>
+    {sub && <small>{sub}</small>}
+    {share !== null && <><Bar value={share} label={`${containerName} ${name}: ${share.toFixed(1)}% of server capacity`} /><small>{share.toFixed(1)}% of server capacity</small></>}
+  </div>;
+}
+
+function ContainerCompactMetric({ containerName, label, value, share, color }: { containerName: string; label: string; value: string; share: number | null; color: string }) {
+  return <span className={`container-compact-metric ${color}`}>
+    <span className="container-compact-label">{label}</span><strong>{value}</strong>
+    {share !== null && <Bar value={share} label={`${containerName} ${label}: ${share.toFixed(1)}% of server capacity`} />}
+  </span>;
+}
+
+function ContainerUsageRow({ container, capacity }: { container: Container; capacity: ContainerCapacity }) {
+  const cpu = knownUsage(container.cpu_percent) ? container.cpu_percent : null;
+  const memory = knownUsage(container.memory_used_bytes) ? container.memory_used_bytes : null;
+  const vram = knownUsage(container.gpu_memory_mib) ? container.gpu_memory_mib : null;
+  const cpuCores = cpu === null ? null : cpu / 100;
+  const cpuShare = serverShare(cpuCores, capacity.cores);
+  const ramShare = serverShare(memory, capacity.memoryBytes);
+  const gpuShare = serverShare(vram, capacity.gpuMemoryMib);
+  const owner = container.owner.owner ?? "unknown owner";
+  const name = container.name;
+  return <details className="container-usage-row" aria-label={`Container ${name}`}>
+    <summary className="container-usage-summary">
+      <span className="container-summary-identity" title={`${name} · ${owner}`}><strong title={name}>{name}</strong><span className="container-owner" title={owner}>{owner}</span></span>
+      <ContainerCompactMetric containerName={name} label="CPU" value={cpuCores === null ? "—" : `${cpuCores.toFixed(2)}코어`} share={cpuShare} color="container-cpu" />
+      <ContainerCompactMetric containerName={name} label="RAM" value={bytes(memory)} share={ramShare} color="container-ram" />
+      <ContainerCompactMetric containerName={name} label="GPU VRAM" value={mib(vram)} share={gpuShare} color="container-vram" />
+    </summary>
+    <div className="container-usage-expanded">
+      <div className="container-expanded-metadata"><strong title={name}>{name}</strong><span className="container-owner">{owner}</span><span className="container-image" title={container.image ?? "unknown image"}>{container.image ?? "unknown image"}</span></div>
+      <div className="container-resources">
+        <ContainerResource name="CPU" containerName={name} color="container-cpu" value={cpu === null ? "—" : `${cpu.toFixed(1)}%`} sub={cpuCores === null ? undefined : `약 ${cpuCores.toFixed(2)}코어 사용${capacity.cores === null ? "" : ` / ${capacity.cores} server cores`}`} share={cpuShare} />
+        <ContainerResource name="RAM" containerName={name} color="container-ram" value={bytes(memory)} sub={memory !== null && capacity.memoryBytes !== null ? `/ ${bytes(capacity.memoryBytes)} server RAM` : undefined} share={ramShare} />
+        <ContainerResource name="GPU VRAM" containerName={name} color="container-vram" value={mib(vram)} sub={vram !== null && capacity.gpuMemoryMib !== null ? `/ ${mib(capacity.gpuMemoryMib)} server GPU VRAM` : undefined} share={gpuShare} />
+      </div>
+    </div>
+  </details>;
 }
 
 function eventSummary(event: ContainerEvent): string {
@@ -191,11 +252,12 @@ function Detail({ server, close }: { server: Server; close: () => void }) {
   const people = users.filter((user) => !user.is_system);
   const systemUsers = users.filter((user) => user.is_system);
   const containers = server.containers.value ?? [];
+  const containerCapacities = containerCapacity(server);
   const containerEvents = server.container_events.value ?? [];
   const processes = server.gpu_processes.value ?? [];
   return <main className="detail"><button className="back" onClick={close}>← All servers</button><h1>{server.display_name}</h1><p className="caption">Latest snapshot · {server.connection}</p><div className="detail-grid">
     <article className="users"><div className="section-heading"><h2>Users</h2>{hasTrackedUsers && <button className="toggle" onClick={() => setShowAllUsers((value) => !value)}>{showAllUsers ? "Tracked users" : `All users${hiddenCount ? ` (${hiddenCount} hidden)` : ""}`}</button>}</div>{people.length === 0 ? <p>{hasTrackedUsers ? "No tracked users running" : "No non-system users running"}</p> : people.map((user) => <p key={user.username}><b>{user.username}</b><span>{user.estimated_cpu_cores.toFixed(2)} cores · {bytes(user.memory_rss_bytes)}</span></p>)}{systemUsers.length > 0 && <details className="system-users"><summary>System accounts ({systemUsers.length})</summary>{systemUsers.map((user) => <p key={user.username}><b>{user.username}</b><span>{user.estimated_cpu_cores.toFixed(2)} cores · {bytes(user.memory_rss_bytes)}</span></p>)}</details>}</article>
-    <article className="running-containers"><h2>Running containers</h2>{containers.length === 0 ? <p>No running containers</p> : containers.map((container) => <p key={container.id}><b>{container.name}</b><span>{container.image ?? "unknown image"} · {container.owner.owner ?? "unknown owner"}<br />{container.cpu_percent?.toFixed(1) ?? "—"}% CPU · {containerMemory(container)} RAM · {mib(container.gpu_memory_mib)} GPU VRAM</span></p>)}</article>
+    <article className="running-containers"><header className="container-section-heading"><div><h2>Running containers</h2><small>{server.containers.value === null ? "—" : containers.length} running</small></div><div className="container-capacity-summary"><span>CPU<strong>{containerCapacities.cores === null ? "—" : `${containerCapacities.cores} cores`}</strong></span><span>RAM<strong>{bytes(containerCapacities.memoryBytes)}</strong></span><span>GPU VRAM<strong>{mib(containerCapacities.gpuMemoryMib)}</strong></span></div></header>{server.containers.value === null ? <p>Container data unavailable</p> : containers.length === 0 ? <p>No running containers</p> : <div className="container-list"><div className="container-list-heading"><span>Container</span><span>CPU</span><span>RAM</span><span>GPU VRAM</span></div>{containers.map((container) => <ContainerUsageRow key={container.id} container={container} capacity={containerCapacities} />)}</div>}</article>
     <article className="gpu-processes"><h2>GPU process mapping</h2>{processes.length === 0 ? <p>No GPU process data</p> : processes.map((process) => <GpuProcessRow key={`${process.gpu_uuid ?? "gpu"}-${process.pid}`} process={process} containers={containers} />)}</article>
     <article className="container-events"><h2>Recent container activity <small>({server.container_events.status})</small></h2>{containerEvents.length === 0 ? <p>No container activity observed in this app session</p> : containerEvents.map((event) => <p key={`${event.occurred_at}-${event.container_id}-${event.action}`}><b>{event.action}</b><span>{new Date(event.occurred_at).toLocaleString()}<br />{eventSummary(event)}</span></p>)}</article>
   </div></main>;

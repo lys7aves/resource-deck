@@ -203,7 +203,7 @@ def map_gpu_processes(processes: list[GpuProcess], containers: list[dict], evide
         process.container_id = found
 
 
-def parse_containers(inventory: str, stats: str, hints: OwnerHints, gpu_processes: list[GpuProcess], evidence: dict[int, ProcessEvidence] | None = None, docker_top: dict[str, set[int]] | None = None) -> list[ContainerMetrics]:
+def parse_containers(inventory: str, stats: str, hints: OwnerHints, gpu_processes: list[GpuProcess], evidence: dict[int, ProcessEvidence] | None = None, docker_top: dict[str, set[int]] | None = None, *, gpu_measurement_available: bool = True) -> list[ContainerMetrics]:
     items = _inspect_items(inventory)
     map_gpu_processes(gpu_processes, list(items.values()), evidence or {}, docker_top or {})
     statistics: dict[str, dict] = {}
@@ -222,7 +222,10 @@ def parse_containers(inventory: str, stats: str, hints: OwnerHints, gpu_processe
         except ValueError:
             cpu = None
         related = [process for process in gpu_processes if process.container_id and process.container_id.startswith(identifier)]
+        gpu_memory = None
+        if gpu_measurement_available and all(process.memory_used_mib is not None for process in related):
+            gpu_memory = sum(process.memory_used_mib for process in related if process.memory_used_mib is not None)
         name = str(item["Names"])
         labels = item["Labels"]
-        output.append(ContainerMetrics(id=identifier, name=name, image=item["Image"], status=item["Status"], started_at=item["StartedAt"], init_pid=item["Pid"], mounts=item["Mounts"], compose_project=labels.get("com.docker.compose.project") or labels.get("resourcedeck.project"), owner=attribute_owner(labels, item["Mounts"], name, hints), cpu_percent=cpu, memory_used_bytes=_parse_bytes(memory[0]) if memory else None, memory_limit_bytes=_parse_bytes(memory[1]) if len(memory) > 1 else None, gpu_memory_mib=sum(item.memory_used_mib or 0 for item in related), gpu_process_count=len(related)))
+        output.append(ContainerMetrics(id=identifier, name=name, image=item["Image"], status=item["Status"], started_at=item["StartedAt"], init_pid=item["Pid"], mounts=item["Mounts"], compose_project=labels.get("com.docker.compose.project") or labels.get("resourcedeck.project"), owner=attribute_owner(labels, item["Mounts"], name, hints), cpu_percent=cpu, memory_used_bytes=_parse_bytes(memory[0]) if memory else None, memory_limit_bytes=_parse_bytes(memory[1]) if len(memory) > 1 else None, gpu_memory_mib=gpu_memory, gpu_process_count=len(related)))
     return output

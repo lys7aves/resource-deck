@@ -123,3 +123,25 @@ async def test_ssh_rejects_missing_known_hosts(tmp_path):
     executor = RemoteExecutor(ServerSettings(id="local", ssh_host="localhost", ssh_known_hosts=str(tmp_path / "missing")), PollingSettings())
     with pytest.raises(FileNotFoundError, match="known_hosts"):
         await executor.connect()
+
+
+def test_gpu_process_memory_preserves_na_and_zero():
+    from resourcedeck.collectors.nvidia import parse_gpu_processes
+
+    processes = parse_gpu_processes("GPU-a, 123, python, N/A\nGPU-b, 124, python, 0\n")
+    assert processes[0].memory_used_mib is None
+    assert processes[1].memory_used_mib == 0
+
+
+def test_container_gpu_aggregate_distinguishes_unknown_zero_and_multiple_gpus():
+    identifier = "a" * 64
+    processes = [GpuProcess(pid=123, gpu_uuid="GPU-a", memory_used_mib=1024), GpuProcess(pid=124, gpu_uuid="GPU-b", memory_used_mib=2048)]
+    evidence = {pid: ProcessEvidence(pid, [77, 1]) for pid in (123, 124)}
+    args = (_inventory(identifier), '{"ID":"' + identifier + '","CPUPerc":"305.1%"}', OwnerHints())
+    container = parse_containers(*args, processes, evidence)[0]
+    assert container.cpu_percent == 305.1
+    assert container.gpu_memory_mib == 3072
+    processes[1].memory_used_mib = None
+    assert parse_containers(*args, processes, evidence)[0].gpu_memory_mib is None
+    assert parse_containers(*args, [])[0].gpu_memory_mib == 0
+    assert parse_containers(*args, [], gpu_measurement_available=False)[0].gpu_memory_mib is None

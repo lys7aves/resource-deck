@@ -95,7 +95,7 @@ class ContainerMetrics(BaseModel):
     cpu_percent: float | None = None
     memory_used_bytes: int | None = None
     memory_limit_bytes: int | None = None
-    gpu_memory_mib: float = 0
+    gpu_memory_mib: float | None = None
     gpu_process_count: int = 0
 
 

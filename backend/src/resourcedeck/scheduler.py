@@ -89,6 +89,8 @@ class ServerPoller:
             self.snapshot.gpus.status = MetricStatus.UNAVAILABLE if self.snapshot.gpus.value is None else MetricStatus.STALE
         if "gpu_processes" in results and "gpu_processes" not in errors:
             self.snapshot.gpu_processes = MetricEnvelope(status=MetricStatus.OK, value=parse_gpu_processes(results["gpu_processes"].stdout), measurement_method="nvidia_smi")
+        elif "gpu_processes" in errors:
+            self.snapshot.gpu_processes.status = MetricStatus.UNAVAILABLE if self.snapshot.gpu_processes.value is None else MetricStatus.STALE
         gpu_processes = self.snapshot.gpu_processes.value or []
         evidence_command = build_process_evidence_command([process.pid for process in gpu_processes])
         evidence = {}
@@ -122,11 +124,28 @@ class ServerPoller:
                         errors["docker_top"] = "command_failed"
                 except Exception as error:
                     errors["docker_top"] = type(error).__name__
-            self.snapshot.containers = MetricEnvelope(status=MetricStatus.OK, value=parse_containers(results["docker_inventory"].stdout, results["docker_stats"].stdout, self.server.owner_hints, gpu_processes, evidence, top), measurement_method="docker_cli")
+            gpu_available = (
+                self.server.collectors.gpu != "off"
+                and self.snapshot.gpu_processes.status == MetricStatus.OK
+                and self.snapshot.gpu_processes.value is not None
+                and self.snapshot.gpus.status == MetricStatus.OK
+                and "gpu_process_evidence" not in errors
+                and "docker_top" not in errors
+            )
+            self.snapshot.containers = MetricEnvelope(status=MetricStatus.OK, value=parse_containers(results["docker_inventory"].stdout, results["docker_stats"].stdout, self.server.owner_hints, gpu_processes, evidence, top, gpu_measurement_available=gpu_available), measurement_method="docker_cli")
             self._container_metadata.update({container.id: container for container in self.snapshot.containers.value})
             self.snapshot.capabilities.docker = MetricStatus.OK
         elif "docker_inventory" in errors or "docker_stats" in errors:
             self.snapshot.containers.status = MetricStatus.UNAVAILABLE if self.snapshot.containers.value is None else MetricStatus.STALE
+        if (
+            self.server.collectors.gpu == "off"
+            or self.snapshot.gpu_processes.status != MetricStatus.OK
+            or self.snapshot.gpus.status != MetricStatus.OK
+            or "gpu_process_evidence" in errors
+            or "docker_top" in errors
+        ):
+            for container in self.snapshot.containers.value or []:
+                container.gpu_memory_mib = None
         if "docker_events" in results and "docker_events" not in errors:
             until, events = parse_docker_events(results["docker_events"].stdout, self.server.owner_hints, self._container_metadata)
             if until is None:

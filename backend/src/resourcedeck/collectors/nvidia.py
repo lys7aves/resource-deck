@@ -28,6 +28,8 @@ def parse_gpu_processes(output: str) -> list[GpuProcess]:
     result: list[GpuProcess] = []
     for row in csv.reader(StringIO(output), skipinitialspace=True):
         if len(row) < 4: continue
-        try: result.append(GpuProcess(gpu_uuid=row[0] or None, pid=int(row[1]), process_name=row[2] or None, memory_used_mib=int(_number(row[3]) or 0)))
+        try:
+            memory = _number(row[3])
+            result.append(GpuProcess(gpu_uuid=row[0] or None, pid=int(row[1]), process_name=row[2] or None, memory_used_mib=int(memory) if memory is not None else None))
         except ValueError: continue
     return result

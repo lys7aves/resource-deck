@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import App from "./App";
 import type { ConfigServer, Server } from "./types";
 
@@ -89,7 +89,7 @@ describe("ResourceDeck UI", () => {
 
     await screen.findByText("Oracle");
     fireEvent.click(screen.getByRole("button", { name: /Oracle/ }));
-    expect(screen.getByText("yuseop")).toBeTruthy();
+    expect(within(screen.getByText("Users").closest("article")!).getByText("yuseop")).toBeTruthy();
     expect(screen.queryByText("daemon")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "All users (1 hidden)" }));
     expect(screen.getByText("daemon")).toBeTruthy();
@@ -124,7 +124,8 @@ describe("ResourceDeck UI", () => {
 
     await screen.findByText("Oracle");
     fireEvent.click(screen.getByRole("button", { name: /Oracle/ }));
-    expect(screen.getByText(/unknown image · yuseop/)).toBeTruthy();
+    expect(screen.getByText("unknown image")).toBeTruthy();
+    expect(document.querySelector(".container-owner")?.textContent).toBe("yuseop");
     expect(screen.getByText("cgroup match · high confidence")).toBeTruthy();
     expect(screen.getByText("Not mapped to a container")).toBeTruthy();
     expect(screen.getByText("no container evidence")).toBeTruthy();
@@ -365,5 +366,108 @@ describe("ResourceDeck UI", () => {
     expect(screen.getAllByText("주간 사용 한도")).toHaveLength(2);
     expect(screen.getByText(/2d 3h 4m left/)).toBeTruthy();
     expect(screen.getByText(/23h 59m left/)).toBeTruthy();
+  });
+});
+
+
+describe("Container usage list", () => {
+  beforeEach(() => { getProviders.mockResolvedValue([]); getConfiguredServers.mockResolvedValue([]); subscribe.mockReturnValue(() => undefined); });
+  async function open(snapshot: Server) {
+    getServers.mockResolvedValue([snapshot]);
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: /Oracle/ }));
+  }
+  const example: Server = {
+    ...server,
+    system: envelope({ logical_cores: 8, memory_total_bytes: 251.5 * 1024 ** 3 }),
+    gpus: envelope([0, 1].map((index) => ({ index, memory_total_mib: 48 * 1024, state: "busy" }))),
+    containers: envelope([{ ...server.containers.value![0], image: "custom-vllm:0.19.1-cu12.1", cpu_percent: 305.1, memory_used_bytes: 11.1 * 1024 ** 3, memory_limit_bytes: 12 * 1024 ** 3, gpu_memory_mib: 43.6 * 1024 }]),
+  };
+  it("shows compact server-capacity rows and the full metrics when expanded", async () => {
+    await open(example);
+    expect(screen.getByText("1 running")).toBeTruthy();
+    expect(screen.getByText("8 cores")).toBeTruthy();
+    expect(screen.getByText("251.5 GB")).toBeTruthy();
+    expect(screen.getByText("96.0 GB")).toBeTruthy();
+    const row = screen.getByRole("group", { name: "Container trainer" }) as HTMLDetailsElement;
+    expect(row.open).toBe(false);
+    expect(within(row).getByText("3.05코어")).toBeTruthy();
+    expect(within(row).getByText("11.1 GB", { selector: ".container-compact-metric strong" })).toBeTruthy();
+    expect(within(row).getByText("43.6 GB", { selector: ".container-compact-metric strong" })).toBeTruthy();
+    expect(row.open).toBe(false);
+    fireEvent.click(row.querySelector("summary")!);
+    expect(row.open).toBe(true);
+    expect(within(row).getByText("custom-vllm:0.19.1-cu12.1")).toBeTruthy();
+    expect(within(row).getByText("305.1%")).toBeTruthy();
+    expect(within(row).getByText(/약 3.05코어 사용/)).toBeTruthy();
+    for (const [resource, share] of [["CPU", 38.1375], ["RAM", 100 * 11.1 / 251.5], ["GPU VRAM", 100 * 43.6 / 96]] as const) {
+      expect(within(row).getAllByRole("progressbar", { name: new RegExp(`${resource}: ${share.toFixed(1)}% of server capacity`) })).toHaveLength(2);
+    }
+  });
+  it("opens multiple rows and keeps expanded rows through SSE updates", async () => {
+    await open({ ...example, containers: envelope([
+      ...example.containers.value!, { ...example.containers.value![0], id: "second", name: "second-container" },
+    ]) });
+    const first = screen.getByRole("group", { name: "Container trainer" }) as HTMLDetailsElement;
+    const second = screen.getByRole("group", { name: "Container second-container" }) as HTMLDetailsElement;
+    const firstSummary = first.querySelector("summary")!;
+    const secondSummary = second.querySelector("summary")!;
+    fireEvent.click(firstSummary);
+    fireEvent.click(secondSummary);
+    expect(first.open).toBe(true);
+    expect(second.open).toBe(true);
+    act(() => subscribe.mock.calls.at(-1)![0]([{ ...example, containers: envelope([
+      { ...example.containers.value![0], cpu_percent: 900, gpu_memory_mib: null },
+      { ...example.containers.value![0], id: "second", name: "second-container" },
+    ]) }]));
+    const updatedFirst = screen.getByRole("group", { name: "Container trainer" }) as HTMLDetailsElement;
+    const updatedSecond = screen.getByRole("group", { name: "Container second-container" }) as HTMLDetailsElement;
+    expect(updatedFirst.open).toBe(true);
+    expect(updatedSecond.open).toBe(true);
+    expect(within(updatedFirst).getByText("9.00코어")).toBeTruthy();
+    expect(within(updatedFirst).getByText("900.0%")).toBeTruthy();
+    expect(within(updatedFirst).getByText("112.5% of server capacity")).toBeTruthy();
+    const cpuBars = within(updatedFirst).getAllByRole("progressbar", { name: /CPU: 112.5% of server capacity/ });
+    expect(cpuBars).toHaveLength(2);
+    expect(cpuBars.every((bar) => bar.getAttribute("aria-valuenow") === "100")).toBe(true);
+    expect(within(updatedFirst).queryAllByRole("progressbar", { name: /GPU VRAM/ })).toHaveLength(0);
+    act(() => subscribe.mock.calls.at(-1)![0]([{ ...example, containers: envelope([{ ...example.containers.value![0], cpu_percent: 0 }]) }]));
+    expect(screen.queryByRole("group", { name: "Container second-container" })).toBeNull();
+    expect((screen.getByRole("group", { name: "Container trainer" }) as HTMLDetailsElement).open).toBe(true);
+  });
+  it("omits bars when capacity is unknown and distinguishes zero from missing metrics", async () => {
+    await open({ ...example, system: envelope({ logical_cores: 0 }), gpus: envelope([{ index: 0, memory_total_mib: 48 * 1024, state: "idle" }, { index: 1, state: "unknown" }]), containers: envelope([
+      { ...example.containers.value![0], cpu_percent: 0, memory_used_bytes: 0, gpu_memory_mib: 0 },
+      { ...example.containers.value![0], id: "missing", name: "missing", cpu_percent: null, memory_used_bytes: null, gpu_memory_mib: null },
+    ]) });
+    const zero = screen.getByRole("group", { name: "Container trainer" });
+    const missing = screen.getByRole("group", { name: "Container missing" });
+    expect(within(zero).getByText("0.00코어")).toBeTruthy();
+    expect(within(zero).getByText("0 B", { selector: ".container-compact-metric strong" })).toBeTruthy();
+    expect(within(zero).getByText("0 MB", { selector: ".container-compact-metric strong" })).toBeTruthy();
+    expect(within(zero).queryAllByRole("progressbar")).toHaveLength(0);
+    expect(within(missing).getAllByText("—", { selector: ".container-compact-metric strong" })).toHaveLength(3);
+    expect(within(missing).queryAllByRole("progressbar")).toHaveLength(0);
+  });
+  it("shows long names and images in expanded details and preserves row order", async () => {
+    const longName = "very-long-container-name-".repeat(15);
+    const image = "very-long-image-name/".repeat(15);
+    await open({ ...example, containers: envelope([
+      { ...example.containers.value![0], name: longName, image },
+      { ...example.containers.value![0], id: "second", name: "second" },
+    ]) });
+    const rows = screen.getAllByRole("group", { name: /^Container / });
+    expect(rows.map((row) => row.getAttribute("aria-label"))).toEqual([`Container ${longName}`, "Container second"]);
+    const first = rows[0] as HTMLDetailsElement;
+    expect(within(first).getByText(longName, { selector: ".container-summary-identity strong" }).parentElement?.getAttribute("title")).toBe(`${longName} · yuseop`);
+    fireEvent.click(first.querySelector("summary")!);
+    expect(within(first).getByText(image)).toBeTruthy();
+    expect(within(first).getByText(longName, { selector: ".container-expanded-metadata strong" })).toBeTruthy();
+  });
+  it("distinguishes empty inventory from unavailable inventory", async () => {
+    await open({ ...example, containers: envelope([]) });
+    expect(screen.getByText("No running containers")).toBeTruthy();
+    act(() => subscribe.mock.calls.at(-1)![0]([{ ...example, containers: { ...example.containers, status: "unavailable", value: null } }]));
+    expect(screen.getByText("Container data unavailable")).toBeTruthy();
   });
 });
