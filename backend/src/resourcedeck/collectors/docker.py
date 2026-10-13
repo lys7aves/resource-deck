@@ -182,6 +182,8 @@ def map_gpu_processes(processes: list[GpuProcess], containers: list[dict], evide
     by_id = {str(item["ID"]): item for item in containers}
     init_pids = {int(item["Pid"]): identifier for identifier, item in by_id.items() if item.get("Pid")}
     for process in processes:
+        process.container_mapping_source = "unmapped"
+        process.container_mapping_confidence = "none"
         record = evidence.get(process.pid)
         found: str | None = None
         if record:

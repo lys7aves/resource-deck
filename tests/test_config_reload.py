@@ -142,7 +142,11 @@ async def test_container_vram_invalidates_between_docker_polls_and_recovers(fail
             return CommandResult("GPU-a, 123, python, 400\n", "", 0)
         if "--query-gpu" in command:
             return CommandResult("0, GPU-a, A100, 0, 400, 16000, 45\n", "", 0)
+        if "docker top" in command:
+            return CommandResult(f"__RESOURCEDECK_TOP__{identifier}\n123\n", "", 0)
         if "/proc/$root_pid/cgroup" in command:
+            if failure_command == "docker top":
+                return CommandResult("", "", 0)
             return CommandResult(f"123\x1f77,1,\x1f0::/docker/{identifier}\x1falice\n", "", 0)
         if command == DOCKER_INVENTORY_COMMAND:
             return CommandResult("\x1f".join((identifier, "/trainer", "repo/train", "running", "2026-08-31T00:00:00Z", "77", "{}", "[]")), "", 0)
@@ -159,12 +163,13 @@ async def test_container_vram_invalidates_between_docker_polls_and_recovers(fail
     await poller.collect_once()
     assert poller.snapshot.containers.value[0].gpu_memory_mib == 400
     poller.due = lambda name, seconds: name != "docker" or docker_due
-    # Evidence and GPU failures must invalidate the value without a Docker poll.
-    # docker top itself is collected only when Docker is due.
+    # GPU failures invalidate VRAM; successful fallback can recover evidence failures.
+    # docker top is needed only when primary attribution cannot map the PID.
     docker_due = failure_command == "docker top"
     failed = True
     await poller.collect_once()
-    assert poller.snapshot.containers.value[0].gpu_memory_mib is None
+    expected = 400 if failure_command == "/proc/$root_pid/cgroup" else None
+    assert poller.snapshot.containers.value[0].gpu_memory_mib == expected
     assert poller.snapshot.containers.value[0].cpu_percent == 305.1
     if failure_command == "--query-compute-apps":
         assert poller.snapshot.gpu_processes.status == "stale"
@@ -189,3 +194,50 @@ async def test_first_gpu_process_failure_sets_unavailable():
     poller.executor.run = run
     await poller.collect_once()
     assert poller.snapshot.gpu_processes.status == "unavailable"
+
+
+async def test_container_vram_refreshes_without_docker_poll_and_skips_unneeded_top():
+    from resourcedeck.collectors.docker import DOCKER_INVENTORY_COMMAND, DOCKER_STATS_COMMAND
+
+    poller = ServerPoller(server("one"), PollingSettings(), SnapshotStore())
+    identifier = "a" * 64
+    docker_due = True
+    memory = 400
+    pid = 123
+    commands = []
+    poller.due = lambda name, seconds: name != "docker" or docker_due
+
+    async def run(command, timeout=None):
+        commands.append(command)
+        if "cat /proc/stat" in command:
+            return CommandResult("cpu  100 0 20 880\n__MEMINFO__\nMemTotal: 1000 kB\nMemAvailable: 400 kB\n__LOADAVG__\n1\n__CORES__\n8\n", "", 0)
+        if "--query-compute-apps" in command:
+            return CommandResult(f"GPU-a, {pid}, python, {memory}\n" if memory else "", "", 0)
+        if "--query-gpu" in command:
+            return CommandResult(f"0, GPU-a, A100, 0, {memory}, 16000, 45\n", "", 0)
+        if "/proc/$root_pid/cgroup" in command:
+            return CommandResult(f"{pid}\x1f77,1,\x1f0::/docker/{identifier}\x1falice\n", "", 0)
+        if command == DOCKER_INVENTORY_COMMAND:
+            return CommandResult("\x1f".join((identifier, "/trainer", "repo/train", "running", "2026-08-31T00:00:00Z", "77", "{}", "[]")), "", 0)
+        if command == DOCKER_STATS_COMMAND:
+            return CommandResult('{"ID":"' + identifier + '","CPUPerc":"12%","MemUsage":"1GiB / 4GiB"}', "", 0)
+        if "docker top" in command:
+            return CommandResult("", "denied", 1)
+        return CommandResult("__RESOURCEDECK_EVENTS_UNTIL__100\n", "", 0)
+
+    poller.executor.run = run
+    await poller.collect_once()
+    assert poller.snapshot.containers.value[0].gpu_memory_mib == 400
+    docker_due = False
+    memory, pid = 800, 456
+    commands.clear()
+    await poller.collect_once()
+    container = poller.snapshot.containers.value[0]
+    assert container.gpu_memory_mib == 800
+    assert container.cpu_percent == 12
+    assert poller.snapshot.gpu_processes.value[0].container_id == identifier
+    assert not any("docker top" in command or command == DOCKER_INVENTORY_COMMAND for command in commands)
+    memory = 0
+    await poller.collect_once()
+    assert poller.snapshot.containers.value[0].gpu_memory_mib == 0
+    assert poller.snapshot.containers.value[0].gpu_process_count == 0

@@ -24,6 +24,8 @@ class ServerPoller:
         self._last: dict[str, float] = {}
         self._docker_events_since: int | None = None
         self._container_metadata: dict[str, ContainerMetrics] = {}
+        self._docker_inventory: str | None = None
+        self._docker_stats: str = ""
 
     def retain_container_events(self, new_events: list[ContainerEvent]) -> list[ContainerEvent]:
         """Keep a bounded, in-memory working history rather than an audit log."""
@@ -112,40 +114,44 @@ class ServerPoller:
                 user.tracked = user.username in tracked_users
             self.snapshot.users = MetricEnvelope(status=MetricStatus.OK, value=users, measurement_method="ps_percent_cpu_rss")
             self.snapshot.capabilities.users = MetricStatus.OK
-        if "docker_inventory" in results and "docker_inventory" not in errors and "docker_stats" not in errors:
-            top = {}
-            top_command = build_docker_top_command(parse_container_ids(results["docker_inventory"].stdout))
-            if top_command:
-                try:
-                    top_result = await self.executor.run(top_command)
-                    if top_result.exit_status == 0:
-                        top = parse_docker_top(top_result.stdout)
-                    else:
-                        errors["docker_top"] = "command_failed"
-                except Exception as error:
-                    errors["docker_top"] = type(error).__name__
+        docker_updated = "docker_inventory" in results and "docker_inventory" not in errors and "docker_stats" not in errors
+        if docker_updated:
+            self._docker_inventory = results["docker_inventory"].stdout
+            self._docker_stats = results["docker_stats"].stdout
+        elif "docker_inventory" in errors or "docker_stats" in errors:
+            self.snapshot.containers.status = MetricStatus.UNAVAILABLE if self.snapshot.containers.value is None else MetricStatus.STALE
+        if self._docker_inventory is not None:
             gpu_available = (
                 self.server.collectors.gpu != "off"
                 and self.snapshot.gpu_processes.status == MetricStatus.OK
                 and self.snapshot.gpu_processes.value is not None
                 and self.snapshot.gpus.status == MetricStatus.OK
-                and "gpu_process_evidence" not in errors
-                and "docker_top" not in errors
             )
-            self.snapshot.containers = MetricEnvelope(status=MetricStatus.OK, value=parse_containers(results["docker_inventory"].stdout, results["docker_stats"].stdout, self.server.owner_hints, gpu_processes, evidence, top, gpu_measurement_available=gpu_available), measurement_method="docker_cli")
-            self._container_metadata.update({container.id: container for container in self.snapshot.containers.value})
-            self.snapshot.capabilities.docker = MetricStatus.OK
-        elif "docker_inventory" in errors or "docker_stats" in errors:
-            self.snapshot.containers.status = MetricStatus.UNAVAILABLE if self.snapshot.containers.value is None else MetricStatus.STALE
-        if (
-            self.server.collectors.gpu == "off"
-            or self.snapshot.gpu_processes.status != MetricStatus.OK
-            or self.snapshot.gpus.status != MetricStatus.OK
-            or "gpu_process_evidence" in errors
-            or "docker_top" in errors
-        ):
-            for container in self.snapshot.containers.value or []:
-                container.gpu_memory_mib = None
+            # Refresh attribution and VRAM using the last Docker inventory,
+            # without resampling its CPU/RAM statistics.
+            containers = parse_containers(self._docker_inventory, self._docker_stats, self.server.owner_hints, gpu_processes, evidence, gpu_measurement_available=gpu_available)
+            unmapped = any(process.container_id is None for process in gpu_processes)
+            top_command = build_docker_top_command(parse_container_ids(self._docker_inventory)) if gpu_available and unmapped else None
+            if top_command:
+                try:
+                    top_result = await self.executor.run(top_command)
+                    if top_result.exit_status == 0:
+                        top = parse_docker_top(top_result.stdout)
+                        containers = parse_containers(self._docker_inventory, self._docker_stats, self.server.owner_hints, gpu_processes, evidence, top, gpu_measurement_available=gpu_available)
+                    else:
+                        errors["docker_top"] = "command_failed"
+                except Exception as error:
+                    errors["docker_top"] = type(error).__name__
+            # Failed fallback collection must not invalidate proven mappings.
+            if any(process.container_id is None for process in gpu_processes) and ("gpu_process_evidence" in errors or "docker_top" in errors):
+                for container in containers:
+                    container.gpu_memory_mib = None
+            if docker_updated:
+                self.snapshot.containers = MetricEnvelope(status=MetricStatus.OK, value=containers, measurement_method="docker_cli")
+                self.snapshot.capabilities.docker = MetricStatus.OK
+            else:
+                self.snapshot.containers.value = containers
+            self._container_metadata.update({container.id: container for container in containers})
         if "docker_events" in results and "docker_events" not in errors:
             until, events = parse_docker_events(results["docker_events"].stdout, self.server.owner_hints, self._container_metadata)
             if until is None:
